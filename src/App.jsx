@@ -10,7 +10,7 @@ import { Plus } from 'lucide-react'
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
-  const { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, openFolder } = useTorrents()
+  const { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, openFolder, reverify } = useTorrents()
 
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, torrent: null })
   const [defaultPath, setDefaultPath] = useState('')
@@ -132,6 +132,7 @@ function App() {
                 onRemove={openDeleteModal}
                 onPause={pauseTorrent}
                 onResume={resumeTorrent}
+                onReverify={reverify}
                 openFolder={openFolder}
                 compactMode={appConfig.compactMode}
               />
@@ -146,6 +147,7 @@ function App() {
               onRemove={openDeleteModal}
               onPause={pauseTorrent}
               onResume={resumeTorrent}
+              onReverify={reverify}
               openFolder={openFolder}
               compactMode={appConfig.compactMode}
             />

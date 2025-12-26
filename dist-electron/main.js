@@ -374,6 +374,31 @@ function setupIpcHandlers() {
       silent: false
     }).show();
   });
+  ipcMain.handle("reverify-torrent", (event, infoHash) => {
+    if (!client) return;
+    const t = managedTorrents.find((t2) => t2.infoHash === infoHash);
+    if (t) {
+      console.log(`[Reverify] Force re-checking ${t.name}...`);
+      const active = client.get(infoHash);
+      if (active) {
+        client.remove(infoHash, (e) => {
+          t.paused = false;
+          client.add(t.magnetURI, { path: t.path }, (torrent) => {
+            console.log(`[Reverify] Started re-check for ${torrent.name}`);
+            setupTorrentEventListeners(torrent);
+          });
+          saveTorrentsState();
+        });
+      } else {
+        t.paused = false;
+        client.add(t.magnetURI, { path: t.path }, (torrent) => {
+          console.log(`[Reverify] Started re-check for ${torrent.name}`);
+          setupTorrentEventListeners(torrent);
+        });
+        saveTorrentsState();
+      }
+    }
+  });
 }
 function createWindow() {
   win = new BrowserWindow({

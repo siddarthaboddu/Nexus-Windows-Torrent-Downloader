@@ -480,6 +480,38 @@ function setupIpcHandlers() {
       silent: false
     }).show()
   })
+
+  ipcMain.handle('reverify-torrent', (event, infoHash) => {
+    if (!client) return
+
+    const t = managedTorrents.find(t => t.infoHash === infoHash)
+    if (t) {
+      console.log(`[Reverify] Force re-checking ${t.name}...`)
+
+      // Remove from active client first (keeping data)
+      const active = client.get(infoHash)
+      if (active) {
+        client.remove(infoHash, (e) => {
+          // Once removed, immediately re-add to force hashing
+          // Ensure we set paused=false
+          t.paused = false
+          client.add(t.magnetURI, { path: t.path }, (torrent) => {
+            console.log(`[Reverify] Started re-check for ${torrent.name}`)
+            setupTorrentEventListeners(torrent)
+          })
+          saveTorrentsState()
+        })
+      } else {
+        // If it was paused, just resume it (WebTorrent verifies on add anyway)
+        t.paused = false
+        client.add(t.magnetURI, { path: t.path }, (torrent) => {
+          console.log(`[Reverify] Started re-check for ${torrent.name}`)
+          setupTorrentEventListeners(torrent)
+        })
+        saveTorrentsState()
+      }
+    }
+  })
 }
 
 function createWindow() {

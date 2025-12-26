@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowDown, ArrowUp, Pause, Play, Trash2, Package, ChevronDown, ChevronUp, Folder } from 'lucide-react';
+import { ArrowDown, ArrowUp, Pause, Play, Trash2, Package, ChevronDown, ChevronUp, Folder, RotateCw } from 'lucide-react';
 import TorrentDetails from './TorrentDetails';
 import clsx from 'clsx';
 
@@ -14,7 +14,7 @@ const ProgressBar = ({ progress }) => (
     </div>
 );
 
-const TorrentCard = ({ torrent, onRemove, onTogglePause, openFolder, compactMode }) => {
+const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder, compactMode }) => {
     const [expanded, setExpanded] = useState(false);
 
     return (
@@ -74,6 +74,16 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, openFolder, compactMode
                         >
                             <Trash2 size={16} />
                         </button>
+
+                        <button
+                            onClick={(e) => { e.stopPropagation(); onReverify && onReverify(torrent.infoHash); }}
+                            className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition"
+                            title="Force Re-check"
+                        >
+                            <RotateCw size={16} />
+                        </button>
+
+
                     </div>
                     <div className="text-muted-foreground pl-2 border-l border-border">
                         {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -126,7 +136,7 @@ function formatTime(seconds) {
     return `${s}s`;
 }
 
-const TorrentList = ({ torrents, onRemove, onPause, onResume, openFolder, compactMode }) => {
+const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFolder, compactMode }) => {
     if (torrents.length === 0) {
         return (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
