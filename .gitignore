@@ -16,7 +16,6 @@ dist
 dist-ssr
 dist-electron
 release
-!build
 
 # Local Env
 *.local
