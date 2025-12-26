@@ -25,7 +25,10 @@ const Settings = () => {
                 downloadPath: cfg.downloadPath || resolvedPath,
                 // Theme is handled by useTheme now, but we keep other config
                 downloadLimit: cfg.downloadLimit,
-                uploadLimit: cfg.uploadLimit
+                uploadLimit: cfg.uploadLimit,
+                startWithWindows: cfg.startWithWindows,
+                minimizeToTray: cfg.minimizeToTray,
+                insomniaMode: cfg.insomniaMode
             });
         } catch (e) {
             console.error('Failed to load settings:', e);
@@ -117,6 +120,57 @@ const Settings = () => {
                     />
                 </div>
             </div>
+
+            {/* System Settings */}
+            <div className="glass-panel p-6 rounded-2xl space-y-4">
+                <div className="flex items-center gap-3 text-white mb-2">
+                    <Monitor className="text-purple-500" />
+                    <h3 className="text-lg font-semibold">System</h3>
+                </div>
+                <p className="text-sm text-muted-foreground">Manage application behavior and startup.</p>
+
+                <div className="space-y-4">
+                    <div className="flex items-center justify-between p-3 bg-secondary/20 rounded-xl border border-border/50">
+                        <div>
+                            <p className="text-sm font-medium text-foreground">Start with Windows</p>
+                            <p className="text-xs text-muted-foreground">Launch Nexus automatically.</p>
+                        </div>
+                        <div
+                            onClick={() => updateConfig({ startWithWindows: !config.startWithWindows })}
+                            className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.startWithWindows ? "bg-primary" : "bg-secondary")}
+                        >
+                            <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.startWithWindows ? "translate-x-6" : "translate-x-0")} />
+                        </div>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 bg-secondary/20 rounded-xl border border-border/50">
+                        <div>
+                            <p className="text-sm font-medium text-foreground">Minimize to Tray</p>
+                            <p className="text-xs text-muted-foreground">Keep running in background.</p>
+                        </div>
+                        <div
+                            onClick={() => updateConfig({ minimizeToTray: !config.minimizeToTray })}
+                            className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.minimizeToTray ? "bg-primary" : "bg-secondary")}
+                        >
+                            <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.minimizeToTray ? "translate-x-6" : "translate-x-0")} />
+                        </div>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 bg-secondary/20 rounded-xl border border-border/50">
+                        <div>
+                            <p className="text-sm font-medium text-foreground">Insomnia Mode</p>
+                            <p className="text-xs text-muted-foreground">Prevent sleep while downloading.</p>
+                        </div>
+                        <div
+                            onClick={() => updateConfig({ insomniaMode: !config.insomniaMode })}
+                            className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.insomniaMode ? "bg-primary" : "bg-secondary")}
+                        >
+                            <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.insomniaMode ? "translate-x-6" : "translate-x-0")} />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             {/* Bandwidth Limits */}
             <div className="glass-panel p-6 rounded-2xl space-y-4">
                 <div className="flex items-center gap-3 text-white mb-2">
