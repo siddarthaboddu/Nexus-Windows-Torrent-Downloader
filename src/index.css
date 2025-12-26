@@ -1,0 +1,124 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Paper + Indigo Ink Theme */
+    --background: 35 30% 94%;
+    /* Slightly deeper Warm Paper */
+
+    /* Sleek Purple-Blueish Text (Indigo-950) */
+    --foreground: 230 50% 15%;
+
+    /* Lavender / Ice Blue Tinted Cards */
+    --card: 230 50% 96%;
+    /* Distinct Cool Blue-White */
+    --card-foreground: 230 50% 15%;
+
+    --popover: 230 50% 97%;
+    --popover-foreground: 230 50% 15%;
+
+    /* Vivid Violet/Blue Primary */
+    --primary: 245 80% 60%;
+    /* Sleek Violet */
+    --primary-foreground: 210 40% 98%;
+
+    /* Stronger Periwinkle for Secondary / Boxes */
+    --secondary: 235 40% 90%;
+    /* Visible Blue-ish Purple */
+    --secondary-foreground: 230 50% 15%;
+
+    --muted: 235 30% 90%;
+    --muted-foreground: 230 30% 50%;
+
+    --accent: 226 20% 90%;
+    --accent-foreground: 226 71% 15%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* Blue-ish Purple Border */
+    --border: 226 25% 85%;
+    --input: 226 25% 85%;
+    --ring: 230 70% 55%;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground transition-colors duration-300;
+  }
+}
+
+/* Glassmorphism Utilities */
+.glass {
+  @apply bg-background/80 backdrop-blur-md border border-border;
+}
+
+.glass-panel {
+  @apply bg-card/70 backdrop-blur-xl border border-primary/10 shadow-sm;
+}
+
+/* Custom Scrollbar for sleek look */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.5);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.8);
+}
+
+/* Electron Window Controls */
+.app-region-drag {
+  -webkit-app-region: drag;
+}
+
+.app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
