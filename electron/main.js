@@ -746,7 +746,9 @@ app.whenReady().then(async () => {
   // Initial load
   await loadTorrentsState()
 
-  win.webContents.openDevTools()
+  if (!app.isPackaged) {
+    win.webContents.openDevTools()
+  }
 })
 
 function setupTorrentEventListeners(torrent) {
