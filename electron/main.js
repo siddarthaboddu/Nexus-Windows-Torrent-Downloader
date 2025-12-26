@@ -78,6 +78,22 @@ let saveQueued = false
 let lastSaveTime = 0
 const SAVE_THROTTLE = 2000 // 2 seconds
 
+// Power Save Blocker ID
+let powerSaveId = null
+
+function updatePowerSaveBlocker() {
+  const isDownloading = client && client.torrents.some(t => !t.done && t.progress < 1 && !t.paused)
+
+  if (isDownloading && !powerSaveId) {
+    powerSaveId = powerSaveBlocker.start('prevent-app-suspension')
+    console.log('[PowerSave] Enabled blocker (ID:', powerSaveId, ')')
+  } else if (!isDownloading && powerSaveId) {
+    powerSaveBlocker.stop(powerSaveId)
+    console.log('[PowerSave] Disabled blocker (ID:', powerSaveId, ')')
+    powerSaveId = null
+  }
+}
+
 async function saveTorrentsState() {
   // If already saving, queue another one
   if (isSaving) {
@@ -186,7 +202,6 @@ function setupIpcHandlers() {
         console.log('[DEBUG] Calling client.add with type:', typeof torrentSource, Buffer.isBuffer(torrentSource) ? 'Buffer' : 'String');
 
         // Add to WebTorrent
-        // Note: client.add might throw synchronously OR emit error asynchronously.
         client.add(torrentSource, { path: downloadDir }, (torrent) => {
           // Add to managed state
           const exists = managedTorrents.find(t => t.infoHash === torrent.infoHash)
@@ -201,35 +216,7 @@ function setupIpcHandlers() {
             saveTorrentsState()
           }
 
-          // Listen for tracker updates
-          torrent.on('trackerAnnounce', () => {
-            console.log(`[Announce] ${torrent.name} announced to tracker`)
-          })
-
-          // Notification on completion
-          torrent.on('done', async () => {
-            console.log(`[Done] ${torrent.name} finished downloading`)
-
-            try {
-              const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
-              const config = JSON.parse(data || '{}')
-
-              if (config.enableNotifications) {
-                new Notification({
-                  title: 'Download Complete',
-                  body: `${torrent.name} has finished downloading.`,
-                  silent: !config.enableSound // If enableSound is true/undefined, silent is false (sound plays). If enableSound is false, silent is true.
-                }).show()
-
-                if (config.enableSound) {
-                  // shell.beep() is a simple fallback if native notification sound isn't enough or disabled by OS focus assist
-                  shell.beep()
-                }
-              }
-            } catch (e) { console.error('Notification error:', e) }
-
-            saveTorrentsState()
-          })
+          setupTorrentEventListeners(torrent)
 
           resolve({
             infoHash: torrent.infoHash,
@@ -245,38 +232,38 @@ function setupIpcHandlers() {
   })
 
   ipcMain.handle('open-torrent-folder', async (event, infoHash) => {
-    const torrent = activeMap.get(infoHash) || managedTorrents.find(t => t.infoHash === infoHash)
-    if (torrent && torrent.path) {
-      // torrent.path is the download directory
-      // If single file torrent, it's usually torrent.path/torrent.name
-      // But simplest is just opening the download directory
-      // Or better: show the item in folder
+    let torrentPath = null;
+    let torrentName = null;
 
-      let fullPath = torrent.path;
-      // precise path handling:
-      // if active, we have torrent.files[0].path?
-      // WebTorrent path logic: path is the root folder.
-      // If mult-file torrent: path/TorrentName/
-      // If single-file: path/FileName
+    // Try to get from active WebTorrent instance first
+    if (client) {
+      const active = client.get(infoHash);
+      if (active) {
+        torrentPath = active.path;
+        torrentName = active.name;
+      }
+    }
 
-      // Safest: Open the download directory (config.path)
-      // OR try to find exact folder.
+    // Fallback to managedTorrents if not found or client not ready
+    if (!torrentPath) {
+      const managed = managedTorrents.find(t => t.infoHash === infoHash);
+      if (managed) {
+        torrentPath = managed.path;
+        torrentName = managed.name;
+      }
+    }
 
-      // Let's open the specific folder if it exists, otherwise the parent
-      // For now, simpler: Open the download path (User usually wants to see where files are)
-      // Actually, users want to go TO the files.
-      // If it's a folder-based torrent: path/Name
+    if (torrentPath) {
+      // Construct possible folder path (if it's a folder-based torrent)
+      const possiblePath = torrentName ? path.join(torrentPath, torrentName) : torrentPath;
 
-      // We stored 'path' in managedTorrents as the destination dir.
-      // The actual content is in path.join(torrent.path, torrent.name) usually?
-
-      const possiblePath = path.join(torrent.path, torrent.name);
       try {
+        // Check if the specific torrent folder/file exists
         await fs.access(possiblePath);
-        shell.openPath(possiblePath);
+        shell.showItemInFolder(possiblePath); // Highlights the item
       } catch {
-        // If subfolder doesn't exist (e.g. single file or not created yet), open parent
-        shell.openPath(torrent.path);
+        // Fallback to opening the download directory
+        shell.openPath(torrentPath);
       }
     }
   })
@@ -480,6 +467,11 @@ function setupIpcHandlers() {
     shell.beep()
   })
 
+  ipcMain.handle('get-random-port', async () => {
+    // Return a random port between 1024 and 65535
+    return Math.floor(Math.random() * (65535 - 1024 + 1)) + 1024
+  })
+
   ipcMain.handle('test-notification', () => {
     console.log('[DEBUG] Testing Notification')
     new Notification({
@@ -553,6 +545,7 @@ async function restoreSession() {
         console.log(`[Startup] Resuming: ${t.name || t.infoHash} `)
         client.add(t.magnetURI, { path: t.path }, (torrent) => {
           console.log(`[Startup] Active: ${torrent.name} `)
+          setupTorrentEventListeners(torrent)
         })
       } catch (e) {
         console.error(`[Startup] Failed to resume ${t.infoHash}: `, e)
@@ -630,6 +623,10 @@ app.whenReady().then(async () => {
           totalDownloadSpeed += t.downloadSpeed
           totalUploadSpeed += t.uploadSpeed
 
+          updatePowerSaveBlocker()
+
+
+
           activeMap.set(t.infoHash, {
             infoHash: t.infoHash,
             name: t.name,
@@ -642,7 +639,7 @@ app.whenReady().then(async () => {
             timeRemaining: t.timeRemaining / 1000, // ms to s
             downloaded: t.downloaded,
             length: t.length,
-            ratio: t.ratio,
+            ratio: t.ratio || (t.downloaded > 0 ? t.uploaded / t.downloaded : 0),
             state: t.done ? 'Seeding' : 'Downloading',
             paused: false,
             files: t.files.map(f => ({
@@ -678,11 +675,11 @@ app.whenReady().then(async () => {
           managed.ratio = active.ratio
           managed.name = active.name || managed.name
           managed.done = active.state === 'Seeding' || active.progress >= 1
+          // Persist files for offline viewing
+          managed.files = active.files
 
           // Debug log for completed torrents
-          if (managed.done) {
-            console.log(`[DEBUG] Syncing completed: ${managed.name} (${managed.progress})`)
-          }
+          // Debug log removed
           return active
         }
 
@@ -699,7 +696,8 @@ app.whenReady().then(async () => {
           ratio: managed.ratio || 0,
           state: managed.done ? 'Completed' : 'Paused',
           paused: true,
-          done: managed.done || false
+          done: managed.done || false,
+          files: managed.files || []
         }
       })
 
@@ -718,3 +716,34 @@ app.whenReady().then(async () => {
 
   win.webContents.openDevTools()
 })
+
+function setupTorrentEventListeners(torrent) {
+  // Listen for tracker updates
+  torrent.on('trackerAnnounce', () => {
+    console.log(`[Announce] ${torrent.name} announced to tracker`)
+  })
+
+  // Notification on completion
+  torrent.on('done', async () => {
+    console.log(`[Done] ${torrent.name} finished downloading`)
+
+    try {
+      const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
+      const config = JSON.parse(data || '{}')
+
+      if (config.enableNotifications) {
+        new Notification({
+          title: 'Download Complete',
+          body: `${torrent.name} has finished downloading.`,
+          silent: !config.enableSound
+        }).show()
+
+        if (config.enableSound) {
+          shell.beep()
+        }
+      }
+    } catch (e) { console.error('Notification error:', e) }
+
+    saveTorrentsState()
+  })
+}

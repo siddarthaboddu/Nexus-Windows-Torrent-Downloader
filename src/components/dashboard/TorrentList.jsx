@@ -82,7 +82,12 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, openFolder, compactMode
             </div>
 
             <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                <span>{(torrent.progress * 100).toFixed(1)}%</span>
+                <div className="flex gap-2">
+                    <span>{(torrent.progress * 100).toFixed(1)}%</span>
+                    {torrent.state === 'Downloading' && torrent.timeRemaining && (
+                        <span className="text-muted-foreground/70">• {formatTime(torrent.timeRemaining)} remaining</span>
+                    )}
+                </div>
                 <div className="flex gap-3">
                     <span className="flex items-center gap-1 text-emerald-500"><ArrowDown size={12} /> {formatBytes(torrent.downloadSpeed)}/s</span>
                     <span className="flex items-center gap-1 text-blue-500"><ArrowUp size={12} /> {formatBytes(torrent.uploadSpeed)}/s</span>
@@ -91,6 +96,7 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, openFolder, compactMode
                     </span>
                 </div>
             </div>
+
             <ProgressBar progress={torrent.progress} />
 
             {expanded && <TorrentDetails torrent={torrent} />}
@@ -105,6 +111,19 @@ function formatBytes(bytes, decimals = 2) {
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
     const i = Math.floor(Math.log(bytes) / Math.log(k))
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+}
+
+function formatTime(seconds) {
+    if (!seconds || seconds === Infinity) return '∞';
+    const d = Math.floor(seconds / (3600 * 24));
+    const h = Math.floor((seconds % (3600 * 24)) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
 }
 
 const TorrentList = ({ torrents, onRemove, onPause, onResume, openFolder, compactMode }) => {

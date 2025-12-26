@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeImage, Tray, Menu, ipcMain, dialog, Notification, shell } from "electron";
+import { app, BrowserWindow, nativeImage, Tray, Menu, ipcMain, dialog, shell, Notification, powerSaveBlocker } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
@@ -62,6 +62,18 @@ let isSaving = false;
 let saveQueued = false;
 let lastSaveTime = 0;
 const SAVE_THROTTLE = 2e3;
+let powerSaveId = null;
+function updatePowerSaveBlocker() {
+  const isDownloading = client && client.torrents.some((t) => !t.done && t.progress < 1 && !t.paused);
+  if (isDownloading && !powerSaveId) {
+    powerSaveId = powerSaveBlocker.start("prevent-app-suspension");
+    console.log("[PowerSave] Enabled blocker (ID:", powerSaveId, ")");
+  } else if (!isDownloading && powerSaveId) {
+    powerSaveBlocker.stop(powerSaveId);
+    console.log("[PowerSave] Disabled blocker (ID:", powerSaveId, ")");
+    powerSaveId = null;
+  }
+}
 async function saveTorrentsState() {
   if (isSaving) {
     saveQueued = true;
@@ -155,30 +167,7 @@ function setupIpcHandlers() {
             });
             saveTorrentsState();
           }
-          torrent.on("trackerAnnounce", () => {
-            console.log(`[Announce] ${torrent.name} announced to tracker`);
-          });
-          torrent.on("done", async () => {
-            console.log(`[Done] ${torrent.name} finished downloading`);
-            try {
-              const data = await fs.readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
-              const config = JSON.parse(data || "{}");
-              if (config.enableNotifications) {
-                new Notification({
-                  title: "Download Complete",
-                  body: `${torrent.name} has finished downloading.`,
-                  silent: !config.enableSound
-                  // If enableSound is true/undefined, silent is false (sound plays). If enableSound is false, silent is true.
-                }).show();
-                if (config.enableSound) {
-                  shell.beep();
-                }
-              }
-            } catch (e) {
-              console.error("Notification error:", e);
-            }
-            saveTorrentsState();
-          });
+          setupTorrentEventListeners(torrent);
           resolve({
             infoHash: torrent.infoHash,
             name: torrent.name,
@@ -192,15 +181,29 @@ function setupIpcHandlers() {
     });
   });
   ipcMain.handle("open-torrent-folder", async (event, infoHash) => {
-    const torrent = activeMap.get(infoHash) || managedTorrents.find((t) => t.infoHash === infoHash);
-    if (torrent && torrent.path) {
-      torrent.path;
-      const possiblePath = path.join(torrent.path, torrent.name);
+    let torrentPath = null;
+    let torrentName = null;
+    if (client) {
+      const active = client.get(infoHash);
+      if (active) {
+        torrentPath = active.path;
+        torrentName = active.name;
+      }
+    }
+    if (!torrentPath) {
+      const managed = managedTorrents.find((t) => t.infoHash === infoHash);
+      if (managed) {
+        torrentPath = managed.path;
+        torrentName = managed.name;
+      }
+    }
+    if (torrentPath) {
+      const possiblePath = torrentName ? path.join(torrentPath, torrentName) : torrentPath;
       try {
         await fs.access(possiblePath);
-        shell.openPath(possiblePath);
+        shell.showItemInFolder(possiblePath);
       } catch {
-        shell.openPath(torrent.path);
+        shell.openPath(torrentPath);
       }
     }
   });
@@ -241,10 +244,10 @@ function setupIpcHandlers() {
     }
   });
   ipcMain.handle("get-torrents", async () => {
-    const activeMap2 = /* @__PURE__ */ new Map();
+    const activeMap = /* @__PURE__ */ new Map();
     if (client) {
       client.torrents.forEach((t) => {
-        activeMap2.set(t.infoHash, {
+        activeMap.set(t.infoHash, {
           infoHash: t.infoHash,
           name: t.name,
           progress: t.progress,
@@ -261,7 +264,7 @@ function setupIpcHandlers() {
       });
     }
     return managedTorrents.map((managed) => {
-      const active = activeMap2.get(managed.infoHash);
+      const active = activeMap.get(managed.infoHash);
       if (active) {
         if (!managed.name && active.name) {
           managed.name = active.name;
@@ -360,6 +363,9 @@ function setupIpcHandlers() {
   ipcMain.handle("play-sound", () => {
     shell.beep();
   });
+  ipcMain.handle("get-random-port", async () => {
+    return Math.floor(Math.random() * (65535 - 1024 + 1)) + 1024;
+  });
   ipcMain.handle("test-notification", () => {
     console.log("[DEBUG] Testing Notification");
     new Notification({
@@ -426,6 +432,7 @@ async function restoreSession() {
         console.log(`[Startup] Resuming: ${t.name || t.infoHash} `);
         client.add(t.magnetURI, { path: t.path }, (torrent) => {
           console.log(`[Startup] Active: ${torrent.name} `);
+          setupTorrentEventListeners(torrent);
         });
       } catch (e) {
         console.error(`[Startup] Failed to resume ${t.infoHash}: `, e);
@@ -486,14 +493,15 @@ app.whenReady().then(async () => {
     if (win) {
       let totalDownloadSpeed = 0;
       let totalUploadSpeed = 0;
-      const activeMap2 = /* @__PURE__ */ new Map();
+      const activeMap = /* @__PURE__ */ new Map();
       if (client) {
         client.torrents.forEach((t) => {
           const connectedSeeds = t.wires.filter((w) => w.isSeeder).length;
           const connectedPeers = t.wires.length - connectedSeeds;
           totalDownloadSpeed += t.downloadSpeed;
           totalUploadSpeed += t.uploadSpeed;
-          activeMap2.set(t.infoHash, {
+          updatePowerSaveBlocker();
+          activeMap.set(t.infoHash, {
             infoHash: t.infoHash,
             name: t.name,
             progress: t.progress,
@@ -507,7 +515,7 @@ app.whenReady().then(async () => {
             // ms to s
             downloaded: t.downloaded,
             length: t.length,
-            ratio: t.ratio,
+            ratio: t.ratio || (t.downloaded > 0 ? t.uploaded / t.downloaded : 0),
             state: t.done ? "Seeding" : "Downloading",
             paused: false,
             files: t.files.map((f) => ({
@@ -531,7 +539,7 @@ app.whenReady().then(async () => {
       } catch (e) {
       }
       const uiTorrents = managedTorrents.map((managed) => {
-        const active = activeMap2.get(managed.infoHash);
+        const active = activeMap.get(managed.infoHash);
         if (active) {
           managed.progress = active.progress;
           managed.downloaded = active.downloaded;
@@ -539,9 +547,7 @@ app.whenReady().then(async () => {
           managed.ratio = active.ratio;
           managed.name = active.name || managed.name;
           managed.done = active.state === "Seeding" || active.progress >= 1;
-          if (managed.done) {
-            console.log(`[DEBUG] Syncing completed: ${managed.name} (${managed.progress})`);
-          }
+          managed.files = active.files;
           return active;
         }
         return {
@@ -557,7 +563,8 @@ app.whenReady().then(async () => {
           ratio: managed.ratio || 0,
           state: managed.done ? "Completed" : "Paused",
           paused: true,
-          done: managed.done || false
+          done: managed.done || false,
+          files: managed.files || []
         };
       });
       win.webContents.send("torrents-update", uiTorrents);
@@ -567,3 +574,28 @@ app.whenReady().then(async () => {
   await loadTorrentsState();
   win.webContents.openDevTools();
 });
+function setupTorrentEventListeners(torrent) {
+  torrent.on("trackerAnnounce", () => {
+    console.log(`[Announce] ${torrent.name} announced to tracker`);
+  });
+  torrent.on("done", async () => {
+    console.log(`[Done] ${torrent.name} finished downloading`);
+    try {
+      const data = await fs.readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
+      const config = JSON.parse(data || "{}");
+      if (config.enableNotifications) {
+        new Notification({
+          title: "Download Complete",
+          body: `${torrent.name} has finished downloading.`,
+          silent: !config.enableSound
+        }).show();
+        if (config.enableSound) {
+          shell.beep();
+        }
+      }
+    } catch (e) {
+      console.error("Notification error:", e);
+    }
+    saveTorrentsState();
+  });
+}
