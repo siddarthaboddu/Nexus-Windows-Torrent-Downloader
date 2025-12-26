@@ -1,38 +1,16 @@
-"use strict";
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
-const electron = require("electron");
-const node_url = require("node:url");
-const path = require("node:path");
-const os = require("node:os");
-const fs = require("node:fs/promises");
-var _documentCurrentScript = typeof document !== "undefined" ? document.currentScript : null;
-const __dirname$1 = path.dirname(node_url.fileURLToPath(typeof document === "undefined" ? require("url").pathToFileURL(__filename).href : _documentCurrentScript && _documentCurrentScript.tagName.toUpperCase() === "SCRIPT" && _documentCurrentScript.src || new URL("main.js", document.baseURI).href));
+import { app, BrowserWindow, nativeImage, Tray, Menu, ipcMain, dialog, Notification, shell } from "electron";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import os from "node:os";
+import fs from "node:fs/promises";
+const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
 process.env.DIST = path.join(__dirname$1, "../dist");
-process.env.VITE_PUBLIC = electron.app.isPackaged ? process.env.DIST : path.join(__dirname$1, "../public");
+process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(__dirname$1, "../public");
 let win;
 let client;
-const CONFIG_PATH = path.join(electron.app.getPath("userData"), "nexus-config.json");
+let tray;
+let isQuitting = false;
+const CONFIG_PATH = path.join(app.getPath("userData"), "nexus-config.json");
 async function getLastDownloadPath() {
   try {
     const data = await fs.readFile(CONFIG_PATH, "utf-8");
@@ -70,6 +48,14 @@ async function initWebTorrent() {
   } catch (e) {
     console.error("Failed to apply limits:", e);
   }
+}
+function formatBytes(bytes, decimals = 2) {
+  if (!+bytes) return "0 B";
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]} `;
 }
 let managedTorrents = [];
 let isSaving = false;
@@ -117,9 +103,9 @@ async function loadTorrentsState() {
   }
 }
 function setupIpcHandlers() {
-  electron.ipcMain.handle("select-folder", async () => {
+  ipcMain.handle("select-folder", async () => {
     const defaultPath = await getLastDownloadPath();
-    const { canceled, filePaths } = await electron.dialog.showOpenDialog(win, {
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       title: "Select Download Destination",
       defaultPath,
       properties: ["openDirectory", "createDirectory"]
@@ -127,13 +113,13 @@ function setupIpcHandlers() {
     if (canceled || filePaths.length === 0) return null;
     return filePaths[0];
   });
-  electron.ipcMain.handle("add-torrent", async (event, torrentId, destinationPath) => {
+  ipcMain.handle("add-torrent", async (event, torrentId, destinationPath) => {
     if (!client) await initWebTorrent();
     console.log("[DEBUG] add-torrent called with:", torrentId);
     let downloadDir = destinationPath;
     if (!downloadDir) {
       const defaultPath = await getLastDownloadPath();
-      const { canceled, filePaths } = await electron.dialog.showOpenDialog(win, {
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, {
         title: "Select Download Destination",
         defaultPath,
         properties: ["openDirectory", "createDirectory"]
@@ -178,14 +164,14 @@ function setupIpcHandlers() {
               const data = await fs.readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
               const config = JSON.parse(data || "{}");
               if (config.enableNotifications) {
-                new electron.Notification({
+                new Notification({
                   title: "Download Complete",
                   body: `${torrent.name} has finished downloading.`,
                   silent: !config.enableSound
                   // If enableSound is true/undefined, silent is false (sound plays). If enableSound is false, silent is true.
                 }).show();
                 if (config.enableSound) {
-                  electron.shell.beep();
+                  shell.beep();
                 }
               }
             } catch (e) {
@@ -205,23 +191,23 @@ function setupIpcHandlers() {
       }
     });
   });
-  electron.ipcMain.handle("open-torrent-folder", async (event, infoHash) => {
+  ipcMain.handle("open-torrent-folder", async (event, infoHash) => {
     const torrent = activeMap.get(infoHash) || managedTorrents.find((t) => t.infoHash === infoHash);
     if (torrent && torrent.path) {
       torrent.path;
       const possiblePath = path.join(torrent.path, torrent.name);
       try {
         await fs.access(possiblePath);
-        electron.shell.openPath(possiblePath);
+        shell.openPath(possiblePath);
       } catch {
-        electron.shell.openPath(torrent.path);
+        shell.openPath(torrent.path);
       }
     }
   });
-  electron.ipcMain.handle("get-download-path", async () => {
+  ipcMain.handle("get-download-path", async () => {
     return await getLastDownloadPath();
   });
-  electron.ipcMain.handle("get-config", async () => {
+  ipcMain.handle("get-config", async () => {
     try {
       const data = await fs.readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
       return JSON.parse(data || "{}");
@@ -229,7 +215,7 @@ function setupIpcHandlers() {
       return {};
     }
   });
-  electron.ipcMain.handle("set-config", async (event, newConfig) => {
+  ipcMain.handle("set-config", async (event, newConfig) => {
     try {
       const data = await fs.readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
       const config = JSON.parse(data || "{}");
@@ -245,13 +231,16 @@ function setupIpcHandlers() {
           client.throttleUpload(newConfig.uploadLimit === 0 ? -1 : newConfig.uploadLimit);
         }
       }
+      if (win) {
+        win.webContents.send("config-updated", updated);
+      }
       return updated;
     } catch (e) {
       console.error("Failed to update config:", e);
       throw e;
     }
   });
-  electron.ipcMain.handle("get-torrents", async () => {
+  ipcMain.handle("get-torrents", async () => {
     const activeMap2 = /* @__PURE__ */ new Map();
     if (client) {
       client.torrents.forEach((t) => {
@@ -298,7 +287,7 @@ function setupIpcHandlers() {
       }
     });
   });
-  electron.ipcMain.handle("remove-torrent", async (event, infoHash, deleteData) => {
+  ipcMain.handle("remove-torrent", async (event, infoHash, deleteData) => {
     let t = managedTorrents.find((t2) => t2.infoHash === infoHash);
     if (!t && client) {
       const active = client.get(infoHash);
@@ -322,7 +311,7 @@ function setupIpcHandlers() {
       }
     }
   });
-  electron.ipcMain.handle("pause-torrent", (event, infoHash) => {
+  ipcMain.handle("pause-torrent", (event, infoHash) => {
     if (!client) return;
     const torrent = client.get(infoHash);
     const t = managedTorrents.find((t2) => t2.infoHash === infoHash);
@@ -358,7 +347,7 @@ function setupIpcHandlers() {
       }
     }
   });
-  electron.ipcMain.handle("resume-torrent", (event, infoHash) => {
+  ipcMain.handle("resume-torrent", (event, infoHash) => {
     if (!client) return;
     const t = managedTorrents.find((t2) => t2.infoHash === infoHash);
     if (t) {
@@ -368,12 +357,20 @@ function setupIpcHandlers() {
       saveTorrentsState();
     }
   });
-  electron.ipcMain.handle("play-sound", () => {
-    electron.shell.beep();
+  ipcMain.handle("play-sound", () => {
+    shell.beep();
+  });
+  ipcMain.handle("test-notification", () => {
+    console.log("[DEBUG] Testing Notification");
+    new Notification({
+      title: "Nexus Test",
+      body: "This is a test notification from Nexus!",
+      silent: false
+    }).show();
   });
 }
 function createWindow() {
-  win = new electron.BrowserWindow({
+  win = new BrowserWindow({
     width: 1200,
     height: 800,
     frame: false,
@@ -392,6 +389,19 @@ function createWindow() {
       height: 32
     }
   });
+  win.on("close", async (event) => {
+    if (isQuitting) return;
+    try {
+      const data = await fs.readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
+      const config = JSON.parse(data || "{}");
+      if (config.minimizeToTray) {
+        event.preventDefault();
+        win.hide();
+        return;
+      }
+    } catch (e) {
+    }
+  });
   win.webContents.on("did-finish-load", () => {
     win?.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
   });
@@ -401,9 +411,9 @@ function createWindow() {
     win.loadFile(path.join(process.env.DIST, "index.html"));
   }
 }
-electron.app.on("window-all-closed", () => {
+app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
-    electron.app.quit();
+    app.quit();
     if (client) client.destroy();
   }
 });
@@ -423,24 +433,66 @@ async function restoreSession() {
     }
   });
 }
-electron.app.on("activate", () => {
-  if (electron.BrowserWindow.getAllWindows().length === 0) {
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
 });
-electron.app.whenReady().then(async () => {
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.nexus.torrent");
+}
+app.whenReady().then(async () => {
   await loadTorrentsState();
   await initWebTorrent();
   await restoreSession();
   setupIpcHandlers();
   createWindow();
-  setInterval(() => {
+  try {
+    const iconPath = path.join(process.env.VITE_PUBLIC, "tray.png");
+    const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
+    tray = new Tray(icon);
+    tray.setToolTip("Nexus");
+    tray.setIgnoreDoubleClickEvents(true);
+    tray.on("click", () => {
+      if (win) {
+        if (win.isVisible()) {
+          if (win.isFocused()) win.hide();
+          else win.focus();
+        } else {
+          win.show();
+          win.focus();
+        }
+      }
+    });
+    const contextMenu = Menu.buildFromTemplate([
+      { label: "Show Nexus", click: () => {
+        win?.show();
+        win?.focus();
+      } },
+      { type: "separator" },
+      {
+        label: "Quit",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        }
+      }
+    ]);
+    tray.setContextMenu(contextMenu);
+  } catch (e) {
+    console.error("Failed to create tray:", e);
+  }
+  setInterval(async () => {
     if (win) {
+      let totalDownloadSpeed = 0;
+      let totalUploadSpeed = 0;
       const activeMap2 = /* @__PURE__ */ new Map();
       if (client) {
         client.torrents.forEach((t) => {
           const connectedSeeds = t.wires.filter((w) => w.isSeeder).length;
           const connectedPeers = t.wires.length - connectedSeeds;
+          totalDownloadSpeed += t.downloadSpeed;
+          totalUploadSpeed += t.uploadSpeed;
           activeMap2.set(t.infoHash, {
             infoHash: t.infoHash,
             name: t.name,
@@ -467,6 +519,16 @@ electron.app.whenReady().then(async () => {
             }))
           });
         });
+      }
+      try {
+        const data = await fs.readFile(CONFIG_PATH, "utf-8").catch(() => "{}");
+        const config = JSON.parse(data || "{}");
+        if (config.showSpeedInTray && tray) {
+          tray.setToolTip(`Nexus | DL: ${formatBytes(totalDownloadSpeed)}/s | UL: ${formatBytes(totalUploadSpeed)}/s`);
+        } else if (tray) {
+          tray.setToolTip("Nexus");
+        }
+      } catch (e) {
       }
       const uiTorrents = managedTorrents.map((managed) => {
         const active = activeMap2.get(managed.infoHash);

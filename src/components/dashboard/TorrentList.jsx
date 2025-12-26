@@ -14,34 +14,39 @@ const ProgressBar = ({ progress }) => (
     </div>
 );
 
-const TorrentCard = ({ torrent, onRemove, onTogglePause, openFolder }) => {
+const TorrentCard = ({ torrent, onRemove, onTogglePause, openFolder, compactMode }) => {
     const [expanded, setExpanded] = useState(false);
 
     return (
-        <div className="glass-panel p-4 rounded-xl mb-3 hover:bg-secondary/40 transition-all group">
+        <div className={clsx("glass-panel rounded-xl mb-3 hover:bg-secondary/40 transition-all group",
+            compactMode ? "p-2" : "p-4"
+        )}>
             <div
                 className="flex justify-between items-start mb-2 cursor-pointer"
                 onClick={() => setExpanded(!expanded)}
             >
                 <div className="flex items-center gap-3 overflow-hidden">
-                    <div className={clsx("p-2 rounded-lg transition-colors",
+                    <div className={clsx("rounded-lg transition-colors flex items-center justify-center",
                         torrent.state === 'Seeding' ? "bg-emerald-500/10 text-emerald-500" :
                             torrent.state === 'Completed' ? "bg-muted text-muted-foreground" :
-                                "bg-primary/10 text-primary"
+                                "bg-primary/10 text-primary",
+                        compactMode ? "p-1.5 w-8 h-8" : "p-2 w-10 h-10"
                     )}>
-                        <Package size={20} />
+                        <Package size={compactMode ? 16 : 20} />
                     </div>
                     <div className="min-w-0">
-                        <h4 className="font-medium text-foreground truncate text-sm">{torrent.name || 'Fetching metadata...'}</h4>
-                        <div className="flex items-center gap-2">
-                            <span className={clsx("text-xs font-medium px-2 py-0.5 rounded-full inline-block",
-                                torrent.state === 'Seeding' ? "bg-emerald-500/10 text-emerald-500" :
-                                    torrent.state === 'Completed' ? "bg-secondary text-muted-foreground" :
-                                        "text-muted-foreground p-0 bg-transparent"
-                            )}>
-                                {torrent.state}
-                            </span>
-                        </div>
+                        <h4 className={clsx("font-medium text-foreground truncate", compactMode ? "text-xs" : "text-sm")}>{torrent.name || 'Fetching metadata...'}</h4>
+                        {!compactMode && (
+                            <div className="flex items-center gap-2">
+                                <span className={clsx("text-xs font-medium px-2 py-0.5 rounded-full inline-block",
+                                    torrent.state === 'Seeding' ? "bg-emerald-500/10 text-emerald-500" :
+                                        torrent.state === 'Completed' ? "bg-secondary text-muted-foreground" :
+                                            "text-muted-foreground p-0 bg-transparent"
+                                )}>
+                                    {torrent.state}
+                                </span>
+                            </div>
+                        )}
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -102,7 +107,7 @@ function formatBytes(bytes, decimals = 2) {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
 }
 
-const TorrentList = ({ torrents, onRemove, onPause, onResume, openFolder }) => {
+const TorrentList = ({ torrents, onRemove, onPause, onResume, openFolder, compactMode }) => {
     if (torrents.length === 0) {
         return (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
@@ -146,6 +151,7 @@ const TorrentList = ({ torrents, onRemove, onPause, onResume, openFolder }) => {
                                         }
                                     }}
                                     openFolder={openFolder}
+                                    compactMode={compactMode}
                                 />
                             ))}
                         </div>

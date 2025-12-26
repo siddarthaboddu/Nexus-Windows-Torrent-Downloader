@@ -32,7 +32,9 @@ const Settings = () => {
                 insomniaMode: cfg.insomniaMode,
                 networkPort: cfg.networkPort,
                 enableNotifications: cfg.enableNotifications !== false, // Default true
-                enableSound: cfg.enableSound !== false // Default true
+                enableSound: cfg.enableSound !== false, // Default true
+                compactMode: cfg.compactMode,
+                showSpeedInTray: cfg.showSpeedInTray
             });
         } catch (e) {
             console.error('Failed to load settings:', e);
@@ -230,11 +232,20 @@ const Settings = () => {
                             <p className="text-sm font-medium text-foreground">Enable Desktop Alerts</p>
                             <p className="text-xs text-muted-foreground">Show popup when download finishes.</p>
                         </div>
-                        <div
-                            onClick={() => updateConfig({ enableNotifications: !config.enableNotifications })}
-                            className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.enableNotifications ? "bg-primary" : "bg-secondary")}
-                        >
-                            <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.enableNotifications ? "translate-x-6" : "translate-x-0")} />
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => window.ipcRenderer.invoke('test-notification')}
+                                className="p-2 bg-secondary hover:bg-secondary/80 rounded-full text-foreground transition-colors"
+                                title="Test Notification"
+                            >
+                                <Bell size={14} className="fill-current" />
+                            </button>
+                            <div
+                                onClick={() => updateConfig({ enableNotifications: !config.enableNotifications })}
+                                className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.enableNotifications ? "bg-primary" : "bg-secondary")}
+                            >
+                                <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.enableNotifications ? "translate-x-6" : "translate-x-0")} />
+                            </div>
                         </div>
                     </div>
 
@@ -265,6 +276,43 @@ const Settings = () => {
                 </div>
             </div>
 
+            {/* UI Customization */}
+            <div className="glass-panel p-6 rounded-2xl space-y-4">
+                <div className="flex items-center gap-3 text-white mb-2">
+                    <Monitor className="text-pink-500" />
+                    <h3 className="text-lg font-semibold">Interface</h3>
+                </div>
+                <p className="text-sm text-muted-foreground">Customize the look and feel.</p>
+
+                <div className="space-y-4">
+                    <div className="flex items-center justify-between p-3 bg-secondary/20 rounded-xl border border-border/50">
+                        <div>
+                            <p className="text-sm font-medium text-foreground">Compact Mode</p>
+                            <p className="text-xs text-muted-foreground">Denser list view with smaller padding.</p>
+                        </div>
+                        <div
+                            onClick={() => updateConfig({ compactMode: !config.compactMode })}
+                            className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.compactMode ? "bg-primary" : "bg-secondary")}
+                        >
+                            <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.compactMode ? "translate-x-6" : "translate-x-0")} />
+                        </div>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 bg-secondary/20 rounded-xl border border-border/50">
+                        <div>
+                            <p className="text-sm font-medium text-foreground">Show Speed in Tray</p>
+                            <p className="text-xs text-muted-foreground">Display DL/UL speeds in tray tooltip.</p>
+                        </div>
+                        <div
+                            onClick={() => updateConfig({ showSpeedInTray: !config.showSpeedInTray })}
+                            className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.showSpeedInTray ? "bg-primary" : "bg-secondary")}
+                        >
+                            <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.showSpeedInTray ? "translate-x-6" : "translate-x-0")} />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             {/* Bandwidth Limits */}
             <div className="glass-panel p-6 rounded-2xl space-y-4">
                 <div className="flex items-center gap-3 text-white mb-2">
@@ -284,7 +332,7 @@ const Settings = () => {
                             type="number"
                             min="0"
                             placeholder="0 (Unlimited)"
-                            value={config.downloadLimit !== undefined ? config.downloadLimit / 1024 : ''}
+                            value={config.downloadLimit && config.downloadLimit > 0 ? config.downloadLimit / 1024 : ''}
                             onChange={(e) => setConfig({ ...config, downloadLimit: Number(e.target.value) * 1024 })}
                             className="w-full bg-secondary/50 border border-border/50 rounded-lg px-4 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
                         />
@@ -297,7 +345,7 @@ const Settings = () => {
                             type="number"
                             min="0"
                             placeholder="0 (Unlimited)"
-                            value={config.uploadLimit !== undefined ? config.uploadLimit / 1024 : ''}
+                            value={config.uploadLimit && config.uploadLimit > 0 ? config.uploadLimit / 1024 : ''}
                             onChange={(e) => setConfig({ ...config, uploadLimit: Number(e.target.value) * 1024 })}
                             className="w-full bg-secondary/50 border border-border/50 rounded-lg px-4 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
                         />

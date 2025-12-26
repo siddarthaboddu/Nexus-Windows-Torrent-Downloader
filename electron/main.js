@@ -11,6 +11,8 @@ process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(__dirnam
 
 let win
 let client
+let tray
+let isQuitting = false
 
 // Config persistence
 const CONFIG_PATH = path.join(app.getPath('userData'), 'nexus-config.json')
@@ -309,6 +311,11 @@ function setupIpcHandlers() {
         }
       }
 
+      // Notify renderers
+      if (win) {
+        win.webContents.send('config-updated', updated)
+      }
+
       return updated
     } catch (e) {
       console.error('Failed to update config:', e)
@@ -472,6 +479,15 @@ function setupIpcHandlers() {
   ipcMain.handle('play-sound', () => {
     shell.beep()
   })
+
+  ipcMain.handle('test-notification', () => {
+    console.log('[DEBUG] Testing Notification')
+    new Notification({
+      title: 'Nexus Test',
+      body: 'This is a test notification from Nexus!',
+      silent: false
+    }).show()
+  })
 }
 
 function createWindow() {
@@ -492,6 +508,20 @@ function createWindow() {
       symbolColor: '#ffffff',
       height: 32
     }
+  })
+
+  win.on('close', async (event) => {
+    if (isQuitting) return
+
+    try {
+      const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
+      const config = JSON.parse(data || '{}')
+      if (config.minimizeToTray) {
+        event.preventDefault()
+        win.hide()
+        return
+      }
+    } catch (e) { }
   })
 
   win.webContents.on('did-finish-load', () => {
@@ -537,6 +567,11 @@ app.on('activate', () => {
   }
 })
 
+// Required for Windows Notifications
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.nexus.torrent')
+}
+
 app.whenReady().then(async () => {
   await loadTorrentsState()
   await initWebTorrent()
@@ -544,9 +579,46 @@ app.whenReady().then(async () => {
   setupIpcHandlers()
   createWindow()
 
+  // Initialize Tray
+  try {
+    const iconPath = path.join(process.env.VITE_PUBLIC, 'tray.png')
+    const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+    tray = new Tray(icon)
+    tray.setToolTip('Nexus')
+    tray.setIgnoreDoubleClickEvents(true)
+    tray.on('click', () => {
+      if (win) {
+        if (win.isVisible()) {
+          if (win.isFocused()) win.hide()
+          else win.focus()
+        } else {
+          win.show()
+          win.focus()
+        }
+      }
+    })
+
+    const contextMenu = Menu.buildFromTemplate([
+      { label: 'Show Nexus', click: () => { win?.show(); win?.focus() } },
+      { type: 'separator' },
+      {
+        label: 'Quit', click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+    tray.setContextMenu(contextMenu)
+  } catch (e) {
+    console.error('Failed to create tray:', e)
+  }
+
   // Send updates every second
-  setInterval(() => {
+  setInterval(async () => {
     if (win) {
+      let totalDownloadSpeed = 0
+      let totalUploadSpeed = 0
+
       // Map active torrents
       const activeMap = new Map()
       if (client) {
@@ -554,6 +626,9 @@ app.whenReady().then(async () => {
           // Calculate connected seeds/peers
           const connectedSeeds = t.wires.filter(w => w.isSeeder).length
           const connectedPeers = t.wires.length - connectedSeeds
+
+          totalDownloadSpeed += t.downloadSpeed
+          totalUploadSpeed += t.uploadSpeed
 
           activeMap.set(t.infoHash, {
             infoHash: t.infoHash,
@@ -580,6 +655,18 @@ app.whenReady().then(async () => {
           })
         })
       }
+
+      // Update Tray Tooltip if enabled
+      try {
+        const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
+        const config = JSON.parse(data || '{}')
+
+        if (config.showSpeedInTray && tray) {
+          tray.setToolTip(`Nexus | DL: ${formatBytes(totalDownloadSpeed)}/s | UL: ${formatBytes(totalUploadSpeed)}/s`)
+        } else if (tray) {
+          tray.setToolTip('Nexus')
+        }
+      } catch (e) { }
 
       const uiTorrents = managedTorrents.map(managed => {
         const active = activeMap.get(managed.infoHash)

@@ -14,20 +14,44 @@ function App() {
 
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, torrent: null })
   const [defaultPath, setDefaultPath] = useState('')
+  const [appConfig, setAppConfig] = useState({ compactMode: false })
 
   useEffect(() => {
+    let mounted = true;
+    let removeConfigListener = null;
+
     const initConfig = async () => {
       try {
         if (window.ipcRenderer) {
           // Fetch default download path
           const path = await window.ipcRenderer.invoke('get-download-path')
+          if (!mounted) return;
           setDefaultPath(path)
+
+          // Fetch full config
+          const config = await window.ipcRenderer.invoke('get-config')
+          if (!mounted) return;
+          setAppConfig(config)
+
+          // Listen for updates
+          if (mounted) {
+            removeConfigListener = window.ipcRenderer.on('config-updated', (newConfig) => {
+              if (mounted) setAppConfig(newConfig)
+            })
+          }
         }
       } catch (e) {
         console.error('Failed to load initial config:', e)
       }
     }
     initConfig()
+
+    return () => {
+      mounted = false;
+      if (removeConfigListener) {
+        removeConfigListener()
+      }
+    }
   }, [])
 
   const openDeleteModal = (infoHash) => {
@@ -43,6 +67,8 @@ function App() {
     }
     setDeleteModal({ isOpen: false, torrent: null })
   }
+
+  console.log('[App] Rendering...', { activeTab, isAddModalOpen })
 
   return (
     <Layout activeTab={activeTab} setActiveTab={setActiveTab}>
@@ -107,6 +133,7 @@ function App() {
                 onPause={pauseTorrent}
                 onResume={resumeTorrent}
                 openFolder={openFolder}
+                compactMode={appConfig.compactMode}
               />
             </div>
           </div>
@@ -120,6 +147,7 @@ function App() {
               onPause={pauseTorrent}
               onResume={resumeTorrent}
               openFolder={openFolder}
+              compactMode={appConfig.compactMode}
             />
           </div>
         )}

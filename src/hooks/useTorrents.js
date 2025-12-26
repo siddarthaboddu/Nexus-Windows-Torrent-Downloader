@@ -5,6 +5,8 @@ export function useTorrents() {
 
     useEffect(() => {
         // Listen for updates from main process
+        if (!window.ipcRenderer) return;
+
         const removeListener = window.ipcRenderer.on('torrents-update', (data) => {
             setTorrents(data);
         });
