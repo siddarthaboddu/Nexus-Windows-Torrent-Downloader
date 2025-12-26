@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, powerSaveBlocker, Notification } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -65,7 +65,7 @@ function formatBytes(bytes, decimals = 2) {
   const dm = decimals < 0 ? 0 : decimals
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]} `
 }
 
 // State management
@@ -202,6 +202,31 @@ function setupIpcHandlers() {
           // Listen for tracker updates
           torrent.on('trackerAnnounce', () => {
             console.log(`[Announce] ${torrent.name} announced to tracker`)
+          })
+
+          // Notification on completion
+          torrent.on('done', async () => {
+            console.log(`[Done] ${torrent.name} finished downloading`)
+
+            try {
+              const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
+              const config = JSON.parse(data || '{}')
+
+              if (config.enableNotifications) {
+                new Notification({
+                  title: 'Download Complete',
+                  body: `${torrent.name} has finished downloading.`,
+                  silent: !config.enableSound // If enableSound is true/undefined, silent is false (sound plays). If enableSound is false, silent is true.
+                }).show()
+
+                if (config.enableSound) {
+                  // shell.beep() is a simple fallback if native notification sound isn't enough or disabled by OS focus assist
+                  shell.beep()
+                }
+              }
+            } catch (e) { console.error('Notification error:', e) }
+
+            saveTorrentsState()
           })
 
           resolve({
@@ -414,7 +439,7 @@ function setupIpcHandlers() {
         // Never un-complete a torrent
         t.done = t.done || torrent.done || (typeof torrent.progress === 'number' && torrent.progress >= 1);
 
-        console.log(`[DEBUG] Pausing ${t.name}: ManagedProgress=${t.progress}, ManagedDone=${t.done}`)
+        console.log(`[DEBUG] Pausing ${t.name}: ManagedProgress = ${t.progress}, ManagedDone = ${t.done} `)
       } else {
         console.log(`[DEBUG] Pausing ${t.name} but active torrent not found!`)
       }
@@ -442,6 +467,10 @@ function setupIpcHandlers() {
       t.paused = false
       saveTorrentsState()
     }
+  })
+
+  ipcMain.handle('play-sound', () => {
+    shell.beep()
   })
 }
 
@@ -491,12 +520,12 @@ async function restoreSession() {
     if (!t.paused) {
       // Re-add active torrents (Downloading or Seeding)
       try {
-        console.log(`[Startup] Resuming: ${t.name || t.infoHash}`)
+        console.log(`[Startup] Resuming: ${t.name || t.infoHash} `)
         client.add(t.magnetURI, { path: t.path }, (torrent) => {
-          console.log(`[Startup] Active: ${torrent.name}`)
+          console.log(`[Startup] Active: ${torrent.name} `)
         })
       } catch (e) {
-        console.error(`[Startup] Failed to resume ${t.infoHash}:`, e)
+        console.error(`[Startup] Failed to resume ${t.infoHash}: `, e)
       }
     }
   })
