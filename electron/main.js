@@ -84,11 +84,13 @@ let powerSaveId = null
 
 function updatePowerSaveBlocker() {
   const isDownloading = client && client.torrents.some(t => !t.done && t.progress < 1 && !t.paused)
+  // Only block power save if downloading AND insomnia mode is enabled
+  const shouldBlock = isDownloading && appConfig.insomniaMode
 
-  if (isDownloading && !powerSaveId) {
+  if (shouldBlock && !powerSaveId) {
     powerSaveId = powerSaveBlocker.start('prevent-app-suspension')
     console.log('[PowerSave] Enabled blocker (ID:', powerSaveId, ')')
-  } else if (!isDownloading && powerSaveId) {
+  } else if (!shouldBlock && powerSaveId) {
     powerSaveBlocker.stop(powerSaveId)
     console.log('[PowerSave] Disabled blocker (ID:', powerSaveId, ')')
     powerSaveId = null
