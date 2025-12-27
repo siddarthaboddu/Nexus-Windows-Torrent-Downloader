@@ -13,6 +13,7 @@ let win
 let client
 let tray
 let isQuitting = false
+let appConfig = {} // Cache config in memory for sync access
 
 // Config persistence
 const CONFIG_PATH = path.join(app.getPath('userData'), 'nexus-config.json')
@@ -141,6 +142,15 @@ async function loadTorrentsState() {
       managedTorrents = config.torrents
     }
   } catch (e) { }
+}
+
+async function loadConfig() {
+  try {
+    const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
+    appConfig = JSON.parse(data || '{}')
+  } catch (e) {
+    appConfig = {}
+  }
 }
 
 // Track swarm stats per torrent
@@ -284,6 +294,7 @@ function setupIpcHandlers() {
       const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
       const config = JSON.parse(data || '{}')
       const updated = { ...config, ...newConfig }
+      appConfig = updated // Update in-memory cache
       await fs.writeFile(CONFIG_PATH, JSON.stringify(updated, null, 2))
 
       // Apply side effects
@@ -296,6 +307,17 @@ function setupIpcHandlers() {
           console.log('[Config] Setting upload limit:', newConfig.uploadLimit)
           client.throttleUpload(newConfig.uploadLimit === 0 ? -1 : newConfig.uploadLimit)
         }
+      }
+
+      // Apply Start with Windows setting
+      if (typeof newConfig.startWithWindows === 'boolean') {
+        console.log('[Config] Setting auto-launch:', newConfig.startWithWindows)
+        app.setLoginItemSettings({
+          openAtLogin: newConfig.startWithWindows,
+          openAsHidden: false,
+          path: process.execPath,
+          args: app.isPackaged ? [] : [path.resolve(__dirname, '..')]
+        })
       }
 
       // Notify renderers
@@ -534,18 +556,15 @@ function createWindow() {
     }
   })
 
-  win.on('close', async (event) => {
+  win.on('close', (event) => {
     if (isQuitting) return
 
-    try {
-      const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
-      const config = JSON.parse(data || '{}')
-      if (config.minimizeToTray) {
-        event.preventDefault()
-        win.hide()
-        return
-      }
-    } catch (e) { }
+    // Use cached config - synchronous check required for event.preventDefault()
+    if (appConfig.minimizeToTray) {
+      event.preventDefault()
+      win.hide()
+      return
+    }
   })
 
   win.webContents.on('did-finish-load', () => {
@@ -598,11 +617,29 @@ if (process.platform === 'win32') {
 }
 
 app.whenReady().then(async () => {
+  await loadConfig() // Load config first for correct tray/window behavior
   await loadTorrentsState()
   await initWebTorrent()
   await restoreSession() // Resume seeding/downloading
   setupIpcHandlers()
   createWindow()
+
+  // Apply saved Start with Windows setting
+  try {
+    const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
+    const config = JSON.parse(data || '{}')
+    if (typeof config.startWithWindows === 'boolean') {
+      app.setLoginItemSettings({
+        openAtLogin: config.startWithWindows,
+        openAsHidden: false,
+        path: process.execPath,
+        args: app.isPackaged ? [] : [path.resolve(__dirname, '..')]
+      })
+      console.log('[Startup] Auto-launch configured:', config.startWithWindows)
+    }
+  } catch (e) {
+    console.error('[Startup] Failed to apply auto-launch setting:', e)
+  }
 
   // Initialize Tray
   try {
