@@ -18,7 +18,15 @@ const NavItem = ({ icon: Icon, label, active, onClick }) => (
     </button>
 );
 
-const Sidebar = ({ activeTab, setActiveTab }) => {
+const formatBytes = (bytes) => {
+    if (bytes === 0) return '0 KB/s';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}/s`;
+};
+
+const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSpeed: 0 } }) => {
     const { theme, setTheme } = useTheme();
 
     return (
@@ -84,17 +92,17 @@ const Sidebar = ({ activeTab, setActiveTab }) => {
             <div className="p-4 rounded-xl bg-card/40 border border-border backdrop-blur-sm">
                 <div className="flex justify-between items-center mb-2">
                     <span className="text-xs text-muted-foreground">Down</span>
-                    <span className="text-xs font-mono text-emerald-400">0 KB/s</span>
+                    <span className="text-xs font-mono text-emerald-400">{formatBytes(stats.downloadSpeed)}</span>
                 </div>
                 <div className="w-full h-1 bg-secondary rounded-full mb-3 overflow-hidden">
-                    <div className="h-full bg-emerald-500 w-[0%] transition-all duration-500" />
+                    <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${Math.min((stats.downloadSpeed / (10 * 1024 * 1024)) * 100, 100)}%` }} />
                 </div>
                 <div className="flex justify-between items-center mb-2">
                     <span className="text-xs text-muted-foreground">Up</span>
-                    <span className="text-xs font-mono text-blue-400">0 KB/s</span>
+                    <span className="text-xs font-mono text-blue-400">{formatBytes(stats.uploadSpeed)}</span>
                 </div>
                 <div className="w-full h-1 bg-secondary rounded-full overflow-hidden">
-                    <div className="h-full bg-blue-500 w-[0%] transition-all duration-500" />
+                    <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.min((stats.uploadSpeed / (2 * 1024 * 1024)) * 100, 100)}%` }} />
                 </div>
             </div>
         </aside>

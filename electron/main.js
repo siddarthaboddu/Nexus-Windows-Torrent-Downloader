@@ -14,6 +14,7 @@ let client
 let tray
 let isQuitting = false
 let appConfig = {} // Cache config in memory for sync access
+let isRestarting = false // Guard against concurrent restarts
 
 // Config persistence
 const CONFIG_PATH = path.join(app.getPath('userData'), 'nexus-config.json')
@@ -46,19 +47,29 @@ async function saveLastDownloadPath(downloadPath) {
 
 async function initWebTorrent() {
   const { default: WebTorrent } = await import('webtorrent')
-  client = new WebTorrent()
+
+  const opts = {}
+  if (appConfig.networkPort) {
+    console.log('[WebTorrent] Initializing on port:', appConfig.networkPort)
+    opts.port = appConfig.networkPort // Common alias
+    opts.torrentPort = appConfig.networkPort
+    // Do not force dhtPort to same port to avoid EADDRINUSE on Windows
+  }
+
+  client = new WebTorrent(opts)
+
+  client.on('listening', () => {
+    const addr = client.address()
+    console.log(`[WebTorrent] Client listening on ${addr.address}:${addr.port} (TCP/UDP)`)
+  })
 
   client.on('error', (err) => {
     console.error('WebTorrent Error:', err)
   })
 
-  // Apply saved limits
-  try {
-    const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
-    const config = JSON.parse(data || '{}')
-    if (config.downloadLimit) client.throttleDownload(config.downloadLimit)
-    if (config.uploadLimit) client.throttleUpload(config.uploadLimit)
-  } catch (e) { console.error('Failed to apply limits:', e) }
+  // Apply saved limits from memory cache
+  if (appConfig.downloadLimit) client.throttleDownload(appConfig.downloadLimit)
+  if (appConfig.uploadLimit) client.throttleUpload(appConfig.uploadLimit)
 }
 
 // Format bytes to human readable
@@ -287,7 +298,19 @@ function setupIpcHandlers() {
   ipcMain.handle('get-config', async () => {
     try {
       const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
-      return JSON.parse(data || '{}')
+      const config = JSON.parse(data || '{}')
+
+      // If no port configured (random), return the actual active port
+      if (!config.networkPort && client) {
+        try {
+          const address = client.address()
+          if (address && address.port) {
+            config.networkPort = address.port
+          }
+        } catch (e) { }
+      }
+
+      return config
     } catch { return {} }
   })
 
@@ -308,6 +331,37 @@ function setupIpcHandlers() {
         if (typeof newConfig.uploadLimit === 'number') {
           console.log('[Config] Setting upload limit:', newConfig.uploadLimit)
           client.throttleUpload(newConfig.uploadLimit === 0 ? -1 : newConfig.uploadLimit)
+        }
+      }
+
+      // Restart engine if port changed
+      if (newConfig.networkPort !== undefined && newConfig.networkPort !== config.networkPort) {
+        if (isRestarting) {
+          console.log('[Config] Restart already in progress, skipping duplicate folder...')
+          return updated
+        }
+
+        console.log('[Config] Port changed, restarting engine...')
+        isRestarting = true
+
+        if (client && !client.destroyed) {
+          const oldClient = client
+          client = null
+
+          oldClient.destroy(() => {
+            console.log('[Engine] Old client destroyed')
+            setTimeout(async () => {
+              await initWebTorrent()
+              await restoreSession()
+              isRestarting = false
+              console.log('[Engine] Restarted on new port')
+            }, 1000) // Reduced back to 1s as concurrency was likely the issue
+          })
+        } else {
+          // No active client, start immediately
+          await initWebTorrent()
+          await restoreSession()
+          isRestarting = false
         }
       }
 

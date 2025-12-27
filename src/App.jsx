@@ -70,8 +70,13 @@ function App() {
 
   console.log('[App] Rendering...', { activeTab, isAddModalOpen })
 
+  const stats = {
+    downloadSpeed: torrents.reduce((acc, t) => acc + t.downloadSpeed, 0),
+    uploadSpeed: torrents.reduce((acc, t) => acc + t.uploadSpeed, 0)
+  }
+
   return (
-    <Layout activeTab={activeTab} setActiveTab={setActiveTab}>
+    <Layout activeTab={activeTab} setActiveTab={setActiveTab} stats={stats}>
       <div className="p-8 pb-20">
         <div className="flex justify-between items-center mb-8 animate-accordion-down">
           <h2 className="text-3xl font-bold text-white tracking-tight">

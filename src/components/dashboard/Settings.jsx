@@ -198,7 +198,7 @@ const Settings = () => {
                                         setPortLoading(true);
                                         try {
                                             const port = await window.ipcRenderer.invoke('get-random-port');
-                                            setConfig({ ...config, networkPort: port });
+                                            updateConfig({ networkPort: port }); // Save immediately
                                         } finally {
                                             setPortLoading(false);
                                         }
@@ -208,6 +208,12 @@ const Settings = () => {
                                     title="Randomize Port"
                                 >
                                     <RefreshCw size={20} className={portLoading ? "animate-spin" : ""} />
+                                </button>
+                                <button
+                                    onClick={() => updateConfig({ networkPort: config.networkPort })}
+                                    className="px-3 py-2 bg-primary hover:bg-primary/90 text-white font-medium rounded-lg transition-colors text-sm"
+                                >
+                                    Apply
                                 </button>
                             </div>
                             <p className="text-xs text-muted-foreground mt-2">
