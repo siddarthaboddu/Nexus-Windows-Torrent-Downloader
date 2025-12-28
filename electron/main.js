@@ -553,8 +553,8 @@ function setupIpcHandlers() {
   ipcMain.handle('test-notification', () => {
     console.log('[DEBUG] Testing Notification')
     new Notification({
-      title: 'Nexus Test',
-      body: 'This is a test notification from Nexus!',
+      title: 'Nexus Torrent',
+      body: 'This is a test notification from Nexus Torrent!',
       silent: false
     }).show()
   })
@@ -602,7 +602,7 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
     },
-    title: 'Nexus',
+    title: 'Nexus Torrent',
     backgroundColor: '#0a0a0a',
     titleBarStyle: 'hidden',
     titleBarOverlay: {
@@ -702,7 +702,7 @@ app.whenReady().then(async () => {
     const iconPath = path.join(process.env.VITE_PUBLIC, 'tray.png')
     const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
     tray = new Tray(icon)
-    tray.setToolTip('Nexus')
+    tray.setToolTip('Nexus Torrent')
     tray.setIgnoreDoubleClickEvents(true)
     tray.on('click', () => {
       if (win) {
@@ -717,7 +717,7 @@ app.whenReady().then(async () => {
     })
 
     const contextMenu = Menu.buildFromTemplate([
-      { label: 'Show Nexus', click: () => { win?.show(); win?.focus() } },
+      { label: 'Show Nexus Torrent', click: () => { win?.show(); win?.focus() } },
       { type: 'separator' },
       {
         label: 'Quit', click: () => {
@@ -784,9 +784,9 @@ app.whenReady().then(async () => {
         const config = JSON.parse(data || '{}')
 
         if (config.showSpeedInTray && tray) {
-          tray.setToolTip(`Nexus | DL: ${formatBytes(totalDownloadSpeed)}/s | UL: ${formatBytes(totalUploadSpeed)}/s`)
+          tray.setToolTip(`Nexus Torrent | DL: ${formatBytes(totalDownloadSpeed)}/s | UL: ${formatBytes(totalUploadSpeed)}/s`)
         } else if (tray) {
-          tray.setToolTip('Nexus')
+          tray.setToolTip('Nexus Torrent')
         }
       } catch (e) { }
 

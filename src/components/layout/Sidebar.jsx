@@ -36,7 +36,7 @@ const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSp
                     <Activity className="text-white" size={18} />
                 </div>
                 <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-foreground to-muted-foreground tracking-tight">
-                    Nexus
+                    Nexus Torrent
                 </h1>
             </div>
 

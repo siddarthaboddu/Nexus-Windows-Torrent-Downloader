@@ -13,7 +13,7 @@
   },
   "build": {
     "appId": "com.nexus.torrent",
-    "productName": "Nexus",
+    "productName": "Nexus Torrent",
     "icon": "build/icon.ico",
     "directories": {
       "output": "release/${version}"
