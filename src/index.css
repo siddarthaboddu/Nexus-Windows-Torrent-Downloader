@@ -4,46 +4,44 @@
 
 @layer base {
   :root {
-    /* Paper + Indigo Ink Theme */
-    --background: 35 30% 94%;
-    /* Slightly deeper Warm Paper */
+    /* iOS Glass Light Theme */
+    /* Cool Clean White Background */
+    --background: 210 20% 98%;
+    /* Deep Black/Gray Text (Zinc-900) */
+    --foreground: 240 10% 3.9%;
 
-    /* Sleek Purple-Blueish Text (Indigo-950) */
-    --foreground: 230 50% 15%;
+    /* Pure White Cards for Glass Effect */
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
 
-    /* Lavender / Ice Blue Tinted Cards */
-    --card: 230 50% 96%;
-    /* Distinct Cool Blue-White */
-    --card-foreground: 230 50% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
 
-    --popover: 230 50% 97%;
-    --popover-foreground: 230 50% 15%;
+    /* iOS Blue */
+    --primary: 211 100% 50%;
+    --primary-foreground: 0 0% 100%;
 
-    /* Vivid Violet/Blue Primary */
-    --primary: 245 80% 60%;
-    /* Sleek Violet */
-    --primary-foreground: 210 40% 98%;
+    /* Light Grey/Blue for Secondary Elements */
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
 
-    /* Stronger Periwinkle for Secondary / Boxes */
-    --secondary: 235 40% 90%;
-    /* Visible Blue-ish Purple */
-    --secondary-foreground: 230 50% 15%;
+    /* Soft Muted Text */
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
 
-    --muted: 235 30% 90%;
-    --muted-foreground: 230 30% 50%;
-
-    --accent: 226 20% 90%;
-    --accent-foreground: 226 71% 15%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
 
-    /* Blue-ish Purple Border */
-    --border: 226 25% 85%;
-    --input: 226 25% 85%;
-    --ring: 230 70% 55%;
+    /* Subtle Borders */
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 211 100% 50%;
 
-    --radius: 0.5rem;
+    /* Rounded iOS Corners */
+    --radius: 1rem;
   }
 
   .dark {

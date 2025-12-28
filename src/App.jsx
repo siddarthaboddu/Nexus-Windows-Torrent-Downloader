@@ -79,7 +79,7 @@ function App() {
     <Layout activeTab={activeTab} setActiveTab={setActiveTab} stats={stats}>
       <div className="p-8 pb-20">
         <div className="flex justify-between items-center mb-8 animate-accordion-down">
-          <h2 className="text-3xl font-bold text-white tracking-tight">
+          <h2 className="text-3xl font-bold text-foreground tracking-tight">
             {activeTab === 'dashboard' ? 'Overview' :
               activeTab === 'transfers' ? 'Active Transfers' :
                 'Settings'}
@@ -103,12 +103,12 @@ function App() {
                   <svg width="100" height="100" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" /></svg>
                 </div>
                 <span className="text-muted-foreground font-medium text-sm">Active Downloads</span>
-                <span className="text-3xl font-bold text-white">{torrents.filter(t => !t.done).length}</span>
+                <span className="text-3xl font-bold text-foreground">{torrents.filter(t => !t.done).length}</span>
               </div>
               <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden">
                 <div className="w-20 h-20 bg-blue-500/20 rounded-full blur-2xl absolute -right-4 -top-4" />
                 <span className="text-muted-foreground font-medium text-sm">Total Download Speed</span>
-                <span className="text-3xl font-bold text-emerald-400">
+                <span className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">
                   {/* Calculate total speed */}
                   {(() => {
                     const totalSpeed = torrents.reduce((acc, t) => acc + t.downloadSpeed, 0);
@@ -123,7 +123,7 @@ function App() {
               <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between h-32 relative overflow-hidden">
                 <div className="w-20 h-20 bg-purple-500/20 rounded-full blur-2xl absolute -right-4 -top-4" />
                 <span className="text-muted-foreground font-medium text-sm">Active Peers</span>
-                <span className="text-3xl font-bold text-indigo-400">
+                <span className="text-3xl font-bold text-indigo-600 dark:text-indigo-400">
                   {torrents.reduce((acc, t) => acc + t.numPeers, 0)}
                 </span>
               </div>
@@ -131,7 +131,7 @@ function App() {
 
             {/* Recent Activity */}
             <div>
-              <h3 className="text-lg font-semibold text-white mb-4">Recent Activity</h3>
+              <h3 className="text-lg font-semibold text-foreground mb-4">Recent Activity</h3>
               <TorrentList
                 torrents={torrents}
                 onRemove={openDeleteModal}
