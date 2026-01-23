@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { X, Magnet, Upload, Folder, ArrowRight, ArrowLeft } from 'lucide-react';
 import { useTorrents } from '../../hooks/useTorrents';
 
-const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath }) => {
+const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet }) => {
     const [step, setStep] = useState(1);
     const [magnet, setMagnet] = useState('');
     const [filePath, setFilePath] = useState(null); // Store selected file path
@@ -12,11 +12,17 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath }) => {
     const { selectFolder } = useTorrents();
 
     // Update destination when defaultPath changes or modal opens
+    // Also handle initialMagnet
     useEffect(() => {
         if (defaultPath && !destination) {
             setDestination(defaultPath);
         }
-    }, [defaultPath, isOpen]);
+
+        if (isOpen && initialMagnet) {
+            setMagnet(initialMagnet);
+            setStep(2); // Auto advance to confirmation
+        }
+    }, [defaultPath, isOpen, initialMagnet]);
 
     if (!isOpen) return null;
 

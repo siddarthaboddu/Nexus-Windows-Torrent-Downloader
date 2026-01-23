@@ -15,6 +15,7 @@ function App() {
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, torrent: null })
   const [defaultPath, setDefaultPath] = useState('')
   const [appConfig, setAppConfig] = useState({ compactMode: false })
+  const [initialMagnet, setInitialMagnet] = useState('')
 
   useEffect(() => {
     let mounted = true;
@@ -37,6 +38,15 @@ function App() {
           if (mounted) {
             removeConfigListener = window.ipcRenderer.on('config-updated', (newConfig) => {
               if (mounted) setAppConfig(newConfig)
+            })
+
+            // Listen for magnet links from main process
+            window.ipcRenderer.on('open-magnet-link', (magnetLink) => {
+              console.log('[App] Received magnet link:', magnetLink)
+              if (mounted) {
+                setInitialMagnet(magnetLink)
+                setIsAddModalOpen(true)
+              }
             })
           }
         }
@@ -166,9 +176,13 @@ function App() {
 
       <AddTorrentModal
         isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
+        onClose={() => {
+          setIsAddModalOpen(false)
+          setInitialMagnet('') // Reset after closing
+        }}
         onAdd={addTorrent}
         defaultPath={defaultPath}
+        initialMagnet={initialMagnet}
       />
 
       <DeleteTorrentModal
