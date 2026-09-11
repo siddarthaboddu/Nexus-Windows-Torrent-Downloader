@@ -153,11 +153,14 @@ Nexus-Windows-Torrent-Downloader/
 | :--- | :--- | :--- | :--- |
 | `torrents-update` | Main → Renderer (Push) | `Torrent[]` | Pushed once every second with real-time stats and swarm data |
 | `open-magnet-link` | Main → Renderer (Push) | `magnetLink: string` | Pushed when external magnet URI is triggered |
+| `open-incoming-torrent` | Main → Renderer (Push) | `{ type: 'magnet' \| 'file', payload: string, name?: string }` | Pushed when `.torrent` file or magnet is passed via CLI, second-instance, or file association |
 | `config-updated` | Main → Renderer (Push) | `Config` | Broadcast when configuration is modified |
 | `get-torrents` | Renderer → Main (Invoke) | None | Returns snapshot of active and paused torrents |
 | `add-torrent` | Renderer → Main (Invoke) | `torrentId: string, destPath?: string` | Adds magnet URI or .torrent file |
 | `pause-torrent` | Renderer → Main (Invoke) | `infoHash: string` | Stops torrent and preserves state in managed array |
 | `resume-torrent` | Renderer → Main (Invoke) | `infoHash: string` | Re-adds torrent to WebTorrent engine |
+| `pause-all-torrents` | Renderer → Main (Invoke) | None | Pauses all active downloading/seeding torrents simultaneously |
+| `resume-all-torrents` | Renderer → Main (Invoke) | None | Resumes all paused torrents simultaneously |
 | `remove-torrent` | Renderer → Main (Invoke) | `infoHash: string, deleteData: boolean` | Deletes torrent, optionally removing files from disk |
 | `reverify-torrent` | Renderer → Main (Invoke) | `infoHash: string` | Forces hash re-check of existing files on disk |
 | `select-folder` | Renderer → Main (Invoke) | None | Opens Windows folder picker dialog |
