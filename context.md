@@ -5,7 +5,7 @@
 **Nexus** is a native-feeling, high-performance Windows BitTorrent desktop client built with **Electron**, **React 19**, and **WebTorrent**. It delivers a modern, dark-mode glassmorphism experience with low system resource consumption, native Windows shell integrations (protocol association, single instance locking, taskbar tray, insomnia mode, native notifications), and robust session persistence.
 
 - **Application Name**: Nexus Torrent (`com.nexus.torrent`)
-- **Version**: 0.9.3
+- **Version**: 1.0.0
 - **Target Platform**: Windows 10 / 11 (x64)
 - **Primary Repository**: [siddarthaboddu/Nexus-Windows-Torrent-Downloader](https://github.com/siddarthaboddu/Nexus-Windows-Torrent-Downloader)
 
@@ -81,7 +81,7 @@ Nexus-Windows-Torrent-Downloader/
 ├── public/
 │   └── tray.png                     # System tray icon
 ├── release/                         # Output folder for electron-builder NSIS installers
-│   └── Nexus Torrent Setup 0.9.3.exe
+│   └── Nexus Torrent Setup 1.0.0.exe
 ├── src/
 │   ├── assets/                      # Static assets and icons
 │   ├── components/
@@ -195,5 +195,5 @@ npm run dist
 
 ### Packaging Details
 - Uses `electron-builder` with `"npmRebuild": false` configured in `package.json` to prevent unnecessary and incompatible native rebuilds of optional C++ dependencies (`bufferutil`, `utf-8-validate`).
-- The NSIS installer executable is placed in `release/Nexus Torrent Setup 0.9.3.exe`.
+- The NSIS installer executable is placed in `release/Nexus Torrent Setup 1.0.0.exe`.
 - Binary output is excluded from git tracking via `.gitignore` to keep git history lightweight and comply with GitHub's 100 MB hard file limit. Production binaries are distributed via **GitHub Releases**.
