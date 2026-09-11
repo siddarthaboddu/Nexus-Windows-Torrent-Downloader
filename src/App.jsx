@@ -10,7 +10,7 @@ import { Plus } from 'lucide-react'
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
-  const { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, openFolder, reverify } = useTorrents()
+  const { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, openFolder, reverify, toggleFileSelection } = useTorrents()
 
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, torrent: null })
   const [defaultPath, setDefaultPath] = useState('')
@@ -90,7 +90,7 @@ function App() {
   }
 
   return (
-    <Layout activeTab={activeTab} setActiveTab={setActiveTab} stats={stats}>
+    <Layout activeTab={activeTab} setActiveTab={setActiveTab} stats={stats} config={appConfig}>
       <div className="p-8 pb-20">
         <div className="flex justify-between items-center mb-8 animate-accordion-down">
           <h2 className="text-3xl font-bold text-foreground tracking-tight">
@@ -154,6 +154,7 @@ function App() {
                 onReverify={reverify}
                 openFolder={openFolder}
                 compactMode={appConfig.compactMode}
+                onToggleFile={toggleFileSelection}
               />
             </div>
           </div>
@@ -169,6 +170,7 @@ function App() {
               onReverify={reverify}
               openFolder={openFolder}
               compactMode={appConfig.compactMode}
+              onToggleFile={toggleFileSelection}
             />
           </div>
         )}

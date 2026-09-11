@@ -153,7 +153,18 @@ async function loadTorrentsState() {
     const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
     const config = JSON.parse(data || '{}')
     if (Array.isArray(config.torrents)) {
-      managedTorrents = config.torrents
+      managedTorrents = config.torrents.map(t => {
+        const totalUploaded = t.totalUploaded || (t.ratio && t.length ? Math.round(t.ratio * t.length) : 0)
+        const totalDownloaded = t.totalDownloaded || t.downloaded || (t.done && t.length ? t.length : 0)
+        return {
+          ...t,
+          deselectedFiles: Array.isArray(t.deselectedFiles) ? t.deselectedFiles : [],
+          baseUploaded: totalUploaded,
+          baseDownloaded: totalDownloaded,
+          totalUploaded: totalUploaded,
+          totalDownloaded: totalDownloaded
+        }
+      })
     }
   } catch (e) { }
 }
@@ -235,7 +246,13 @@ function setupIpcHandlers() {
               magnetURI: torrent.magnetURI,
               path: downloadDir,
               paused: false,
-              name: torrent.name
+              name: torrent.name,
+              deselectedFiles: [],
+              baseUploaded: 0,
+              baseDownloaded: 0,
+              totalUploaded: 0,
+              totalDownloaded: 0,
+              ratio: 0
             })
             saveTorrentsState()
           }
@@ -396,19 +413,43 @@ function setupIpcHandlers() {
     const activeMap = new Map()
     if (client) {
       client.torrents.forEach(t => {
+        const managed = managedTorrents.find(m => m.infoHash === t.infoHash)
+        const baseUp = managed?.baseUploaded || 0
+        const baseDown = managed?.baseDownloaded || 0
+        const lifetimeUploaded = baseUp + (t.uploaded || 0)
+        const targetLength = t.length || managed?.length || 0
+        const isDone = t.done || (managed && managed.done) || t.progress >= 1
+        const lifetimeDownloaded = isDone && targetLength > 0
+          ? targetLength
+          : Math.max(t.downloaded || 0, baseDown + (t.downloaded || 0))
+        const currentRatio = lifetimeDownloaded > 0 ? (lifetimeUploaded / lifetimeDownloaded) : 0
+
+        const deselected = managed?.deselectedFiles || []
+        const filesMapped = (t.files || []).map((f, idx) => ({
+          name: f.name,
+          path: f.path,
+          length: f.length,
+          downloaded: f.downloaded,
+          progress: f.progress,
+          selected: !deselected.includes(idx) && !deselected.includes(f.path),
+          index: idx
+        }))
+
         activeMap.set(t.infoHash, {
           infoHash: t.infoHash,
           name: t.name,
-          progress: t.progress,
+          progress: isDone ? 1 : t.progress,
           downloadSpeed: t.downloadSpeed,
           uploadSpeed: t.uploadSpeed,
           numPeers: t.numPeers,
           timeRemaining: t.timeRemaining,
-          downloaded: t.downloaded,
-          length: t.length,
-          ratio: t.ratio,
-          state: t.done ? 'Seeding' : 'Downloading',
-          paused: false
+          downloaded: isDone && targetLength > 0 ? targetLength : t.downloaded,
+          length: targetLength,
+          ratio: currentRatio,
+          uploaded: lifetimeUploaded,
+          state: isDone ? 'Seeding' : 'Downloading',
+          paused: false,
+          files: filesMapped
         })
       })
     }
@@ -424,6 +465,10 @@ function setupIpcHandlers() {
         }
         return active
       } else {
+        const pTotalDown = (managed.done && managed.length) ? managed.length : (managed.totalDownloaded || managed.downloaded || 0)
+        const pTotalUp = managed.totalUploaded || 0
+        const pRatio = managed.ratio || (pTotalDown > 0 ? (pTotalUp / pTotalDown) : 0)
+
         // It's paused or error or loading - use persisted values
         return {
           infoHash: managed.infoHash,
@@ -433,12 +478,18 @@ function setupIpcHandlers() {
           uploadSpeed: 0,
           numPeers: 0,
           timeRemaining: 0,
-          downloaded: (managed.done && managed.length) ? managed.length : (managed.downloaded || 0),
+          downloaded: pTotalDown,
           length: managed.length || 0,
-          ratio: managed.ratio || 0,
+          ratio: pRatio,
+          uploaded: pTotalUp,
           state: (managed.done || managed.progress >= 1) ? 'Completed' : 'Paused',
           paused: true,
-          done: managed.done || managed.progress >= 1
+          done: managed.done || managed.progress >= 1,
+          files: (managed.files || []).map((f, idx) => ({
+            ...f,
+            selected: !(managed.deselectedFiles || []).includes(idx) && !(managed.deselectedFiles || []).includes(f.path),
+            index: f.index !== undefined ? f.index : idx
+          }))
         }
       }
     })
@@ -494,27 +545,27 @@ function setupIpcHandlers() {
     const t = managedTorrents.find(t => t.infoHash === infoHash)
     if (t) {
       if (torrent) {
-        if (typeof torrent.progress === 'number') {
-          // Only update if we have a valid number
-          // If we are already done, keep it 1.
-          if (t.done) {
-            t.progress = 1;
-          } else {
-            t.progress = Math.max(t.progress || 0, torrent.progress);
-          }
+        const sessionUp = torrent.uploaded || 0
+        const sessionDown = torrent.downloaded || 0
+        t.totalUploaded = (t.baseUploaded || 0) + sessionUp
+        t.baseUploaded = t.totalUploaded
+
+        const targetLength = torrent.length || t.length || 0
+        t.done = t.done || torrent.done || (typeof torrent.progress === 'number' && torrent.progress >= 1)
+        if (t.done) {
+          t.progress = 1
+          t.downloaded = targetLength || t.downloaded || 0
+          t.totalDownloaded = Math.max(t.totalDownloaded || 0, targetLength)
+        } else {
+          t.progress = Math.max(t.progress || 0, torrent.progress || 0)
+          t.downloaded = Math.max(t.downloaded || 0, sessionDown)
+          t.totalDownloaded = Math.max(t.totalDownloaded || 0, (t.baseDownloaded || 0) + sessionDown)
         }
+        t.baseDownloaded = t.totalDownloaded
+        t.length = targetLength
+        t.ratio = t.totalDownloaded > 0 ? (t.totalUploaded / t.totalDownloaded) : 0
 
-        if (typeof torrent.downloaded === 'number') {
-          t.downloaded = Math.max(t.downloaded || 0, torrent.downloaded);
-        }
-
-        t.length = torrent.length || t.length;
-        t.ratio = Math.max(t.ratio || 0, torrent.ratio || 0);
-
-        // Never un-complete a torrent
-        t.done = t.done || torrent.done || (typeof torrent.progress === 'number' && torrent.progress >= 1);
-
-        console.log(`[DEBUG] Pausing ${t.name}: ManagedProgress = ${t.progress}, ManagedDone = ${t.done} `)
+        console.log(`[DEBUG] Pausing ${t.name}: Progress = ${t.progress}, Ratio = ${t.ratio.toFixed(2)}, Done = ${t.done}`)
       } else {
         console.log(`[DEBUG] Pausing ${t.name} but active torrent not found!`)
       }
@@ -535,6 +586,10 @@ function setupIpcHandlers() {
 
     const t = managedTorrents.find(t => t.infoHash === infoHash)
     if (t) {
+      // Re-anchor base stats so session addition is correct
+      t.baseUploaded = t.totalUploaded || t.baseUploaded || 0
+      t.baseDownloaded = t.totalDownloaded || t.baseDownloaded || 0
+
       // Re-add to WebTorrent
       client.add(t.magnetURI, { path: t.path }, (torrent) => {
         setupTorrentEventListeners(torrent)
@@ -542,6 +597,47 @@ function setupIpcHandlers() {
       t.paused = false
       saveTorrentsState()
     }
+  })
+
+  ipcMain.handle('toggle-file-selection', async (event, infoHash, fileIndexOrIndices, selected) => {
+    const indices = Array.isArray(fileIndexOrIndices) ? fileIndexOrIndices : [fileIndexOrIndices]
+    const managed = managedTorrents.find(t => t.infoHash === infoHash)
+    if (managed) {
+      managed.deselectedFiles = managed.deselectedFiles || []
+    }
+    const active = client ? client.get(infoHash) : null
+
+    for (const idx of indices) {
+      if (active && active.files && active.files[idx]) {
+        if (selected) {
+          active.files[idx].select()
+        } else {
+          active.files[idx].deselect()
+        }
+      }
+      if (managed) {
+        if (selected) {
+          managed.deselectedFiles = managed.deselectedFiles.filter(i => i !== idx && i !== active?.files?.[idx]?.path)
+        } else {
+          if (!managed.deselectedFiles.includes(idx)) {
+            managed.deselectedFiles.push(idx)
+          }
+        }
+      }
+    }
+
+    if (managed && managed.files) {
+      managed.files = managed.files.map((f, i) => {
+        const fileIdx = f.index !== undefined ? f.index : i
+        if (indices.includes(fileIdx)) {
+          return { ...f, selected }
+        }
+        return f
+      })
+    }
+
+    saveTorrentsState()
+    return true
   })
 
   ipcMain.handle('play-sound', () => {
@@ -807,28 +903,45 @@ app.whenReady().then(async () => {
 
 
 
+          const managed = managedTorrents.find(m => m.infoHash === t.infoHash)
+          const baseUp = managed?.baseUploaded || 0
+          const baseDown = managed?.baseDownloaded || 0
+          const lifetimeUploaded = baseUp + (t.uploaded || 0)
+          const targetLength = t.length || managed?.length || 0
+          const isDone = t.done || (managed && managed.done) || t.progress >= 1
+          const lifetimeDownloaded = isDone && targetLength > 0
+            ? targetLength
+            : Math.max(t.downloaded || 0, baseDown + (t.downloaded || 0))
+          const currentRatio = lifetimeDownloaded > 0 ? (lifetimeUploaded / lifetimeDownloaded) : 0
+
+          const deselected = managed?.deselectedFiles || []
+          const filesMapped = (t.files || []).map((f, idx) => ({
+            name: f.name,
+            path: f.path,
+            length: f.length,
+            downloaded: f.downloaded,
+            progress: f.progress,
+            selected: !deselected.includes(idx) && !deselected.includes(f.path),
+            index: idx
+          }))
+
           activeMap.set(t.infoHash, {
             infoHash: t.infoHash,
             name: t.name,
-            progress: t.progress,
+            progress: isDone ? 1 : t.progress,
             downloadSpeed: t.downloadSpeed,
             uploadSpeed: t.uploadSpeed,
             numPeers: t.numPeers, // Total connected
             connectedSeeds,
             connectedPeers,
             timeRemaining: t.timeRemaining / 1000, // ms to s
-            downloaded: t.downloaded,
-            length: t.length,
-            ratio: t.ratio || (t.downloaded > 0 ? t.uploaded / t.downloaded : 0),
-            state: t.done ? 'Seeding' : 'Downloading',
+            downloaded: isDone && targetLength > 0 ? targetLength : t.downloaded,
+            length: targetLength,
+            ratio: currentRatio,
+            uploaded: lifetimeUploaded,
+            state: isDone ? 'Seeding' : 'Downloading',
             paused: false,
-            files: t.files.map(f => ({
-              name: f.name,
-              path: f.path,
-              length: f.length,
-              downloaded: f.downloaded,
-              progress: f.progress
-            }))
+            files: filesMapped
           })
         })
       }
@@ -848,15 +961,19 @@ app.whenReady().then(async () => {
           managed.downloaded = active.downloaded
           managed.length = active.length
           managed.ratio = active.ratio
+          managed.totalUploaded = active.uploaded
+          managed.totalDownloaded = active.downloaded
           managed.name = active.name || managed.name
           managed.done = active.state === 'Seeding' || active.progress >= 1
           // Persist files for offline viewing
           managed.files = active.files
 
-          // Debug log for completed torrents
-          // Debug log removed
           return active
         }
+
+        const pTotalDown = (managed.done && managed.length) ? managed.length : (managed.totalDownloaded || managed.downloaded || 0)
+        const pTotalUp = managed.totalUploaded || 0
+        const pRatio = managed.ratio || (pTotalDown > 0 ? (pTotalUp / pTotalDown) : 0)
 
         return {
           infoHash: managed.infoHash,
@@ -866,13 +983,18 @@ app.whenReady().then(async () => {
           uploadSpeed: 0,
           numPeers: 0,
           timeRemaining: 0,
-          downloaded: (managed.done && managed.length) ? managed.length : (managed.downloaded || 0),
+          downloaded: pTotalDown,
           length: managed.length || 0,
-          ratio: managed.ratio || 0,
+          ratio: pRatio,
+          uploaded: pTotalUp,
           state: managed.done ? 'Completed' : 'Paused',
           paused: true,
           done: managed.done || false,
-          files: managed.files || []
+          files: (managed.files || []).map((f, idx) => ({
+            ...f,
+            selected: !(managed.deselectedFiles || []).includes(idx) && !(managed.deselectedFiles || []).includes(f.path),
+            index: f.index !== undefined ? f.index : idx
+          }))
         }
       })
 
@@ -893,11 +1015,34 @@ app.whenReady().then(async () => {
   }
 })
 
+function applyFileSelections(torrent) {
+  const managed = managedTorrents.find(mt => mt.infoHash === torrent.infoHash)
+  if (!managed || !Array.isArray(managed.deselectedFiles) || managed.deselectedFiles.length === 0) return
+
+  const apply = () => {
+    if (!torrent.files || torrent.files.length === 0) return
+    torrent.files.forEach((file, index) => {
+      if (managed.deselectedFiles.includes(index) || managed.deselectedFiles.includes(file.path)) {
+        file.deselect()
+      }
+    })
+  }
+
+  if (torrent.files && torrent.files.length > 0) {
+    apply()
+  } else {
+    torrent.once('ready', apply)
+  }
+}
+
 function setupTorrentEventListeners(torrent) {
   // Prevent unhandled error events from crashing the Electron process
   torrent.on('error', (err) => {
     console.error(`[Torrent Error] ${torrent.name || torrent.infoHash}:`, err)
   })
+
+  // Apply persisted file selections (deselected files)
+  applyFileSelections(torrent)
 
   // Listen for tracker updates
   torrent.on('trackerAnnounce', () => {

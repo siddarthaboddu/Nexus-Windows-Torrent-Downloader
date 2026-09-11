@@ -30,18 +30,19 @@ const formatBytes = (bytes, decimals = 2) => {
 const buildFileTree = (files) => {
     const root = {};
 
-    files.forEach(file => {
+    files.forEach((file, index) => {
+        const fileData = { ...file, index: file.index !== undefined ? file.index : index };
         // Normalize path separators and split
         const parts = file.path.split(/[\\/]/);
         let current = root;
 
-        parts.forEach((part, index) => {
+        parts.forEach((part, i) => {
             if (!current[part]) {
                 current[part] = {
                     name: part,
-                    type: index === parts.length - 1 ? 'file' : 'folder',
+                    type: i === parts.length - 1 ? 'file' : 'folder',
                     children: {},
-                    fileData: index === parts.length - 1 ? file : null
+                    fileData: i === parts.length - 1 ? fileData : null
                 };
             }
             current = current[part].children;
@@ -51,8 +52,70 @@ const buildFileTree = (files) => {
     return root;
 };
 
-const FileTreeNode = ({ node, level = 0 }) => {
-    const [isOpen, setIsOpen] = useState(false);
+const getAllFileIndices = (node) => {
+    if (node.type === 'file' && node.fileData) {
+        return [node.fileData.index];
+    }
+    let indices = [];
+    if (node.children) {
+        Object.values(node.children).forEach(child => {
+            indices = indices.concat(getAllFileIndices(child));
+        });
+    }
+    return indices;
+};
+
+const getFolderSelectionStatus = (node) => {
+    const collectFiles = (n) => {
+        if (n.type === 'file' && n.fileData) return [n.fileData];
+        let res = [];
+        if (n.children) {
+            Object.values(n.children).forEach(c => {
+                res = res.concat(collectFiles(c));
+            });
+        }
+        return res;
+    };
+
+    const allFiles = collectFiles(node);
+    if (allFiles.length === 0) return { checked: false, indeterminate: false };
+    const selectedCount = allFiles.filter(f => f.selected !== false).length;
+
+    if (selectedCount === allFiles.length) {
+        return { checked: true, indeterminate: false };
+    }
+    if (selectedCount === 0) {
+        return { checked: false, indeterminate: false };
+    }
+    return { checked: false, indeterminate: true };
+};
+
+const FileTreeNode = ({ node, level = 0, onToggleFile }) => {
+    const [isOpen, setIsOpen] = useState(level === 0);
+    const folderCheckboxRef = React.useRef(null);
+
+    const isFolder = node.type === 'folder';
+    const folderStatus = isFolder ? getFolderSelectionStatus(node) : null;
+
+    React.useEffect(() => {
+        if (folderCheckboxRef.current && isFolder) {
+            folderCheckboxRef.current.indeterminate = folderStatus.indeterminate;
+        }
+    }, [folderStatus, isFolder]);
+
+    const handleCheckboxClick = (e) => {
+        e.stopPropagation();
+        if (!onToggleFile) return;
+
+        if (isFolder) {
+            const indices = getAllFileIndices(node);
+            const newSelected = !folderStatus.checked;
+            onToggleFile(indices, newSelected);
+        } else if (node.fileData) {
+            const newSelected = node.fileData.selected === false;
+            onToggleFile([node.fileData.index], newSelected);
+        }
+    };
 
     // Sort children: folders first, then files
     const sortedChildren = node.children
@@ -61,6 +124,8 @@ const FileTreeNode = ({ node, level = 0 }) => {
             return a.type === 'folder' ? -1 : 1;
         })
         : [];
+
+    const isFileDeselected = node.type === 'file' && node.fileData?.selected === false;
 
     return (
         <div className="select-none">
@@ -81,6 +146,19 @@ const FileTreeNode = ({ node, level = 0 }) => {
                     )}
                 </div>
 
+                {/* Selection Checkbox */}
+                {onToggleFile && (
+                    <input
+                        type="checkbox"
+                        ref={isFolder ? folderCheckboxRef : null}
+                        checked={isFolder ? folderStatus.checked : (node.fileData?.selected !== false)}
+                        onChange={handleCheckboxClick}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-4 h-4 rounded border-border text-primary focus:ring-0 focus:ring-offset-0 bg-secondary/80 cursor-pointer shrink-0"
+                        title={isFolder ? "Toggle all files in folder" : (node.fileData?.selected !== false ? "Deselect file" : "Select file")}
+                    />
+                )}
+
                 {/* Type Icon */}
                 <div className={`shrink-0 ${node.type === 'folder' ? 'text-blue-500' : 'text-muted-foreground'}`}>
                     {node.type === 'folder' ? (
@@ -91,13 +169,19 @@ const FileTreeNode = ({ node, level = 0 }) => {
                 </div>
 
                 {/* Name */}
-                <div className="flex-1 min-w-0 truncate text-sm">
+                <div className={clsx(
+                    "flex-1 min-w-0 truncate text-sm",
+                    isFileDeselected && "opacity-50 line-through"
+                )}>
                     {node.name}
                 </div>
 
                 {/* File Details */}
                 {node.type === 'file' && node.fileData && (
                     <div className="flex items-center gap-4 text-xs tabular-nums text-muted-foreground shrink-0 ml-2">
+                        {isFileDeselected && (
+                            <span className="text-muted-foreground/60 italic text-[11px]">Skipped</span>
+                        )}
                         <span>{formatBytes(node.fileData.length)}</span>
                         <span className={node.fileData.progress === 1 ? 'text-emerald-500' : 'text-blue-500'}>
                             {Math.round(node.fileData.progress * 100)}%
@@ -110,7 +194,7 @@ const FileTreeNode = ({ node, level = 0 }) => {
             {isOpen && node.type === 'folder' && (
                 <div className="animate-in slide-in-from-top-1 duration-200 fade-in">
                     {sortedChildren.map((child) => (
-                        <FileTreeNode key={child.name} node={child} level={level + 1} />
+                        <FileTreeNode key={child.name} node={child} level={level + 1} onToggleFile={onToggleFile} />
                     ))}
                 </div>
             )}
@@ -118,7 +202,7 @@ const FileTreeNode = ({ node, level = 0 }) => {
     );
 };
 
-const TorrentDetails = ({ torrent }) => {
+const TorrentDetails = ({ torrent, onToggleFile }) => {
     const [speedHistory, setSpeedHistory] = useState([]);
     const [activeTab, setActiveTab] = useState('overview');
 
@@ -238,7 +322,7 @@ const TorrentDetails = ({ torrent }) => {
                             (() => {
                                 const tree = buildFileTree(torrent.files);
                                 return Object.values(tree).map((node) => (
-                                    <FileTreeNode key={node.name} node={node} level={0} />
+                                    <FileTreeNode key={node.name} node={node} level={0} onToggleFile={onToggleFile} />
                                 ));
                             })()
                         ) : (

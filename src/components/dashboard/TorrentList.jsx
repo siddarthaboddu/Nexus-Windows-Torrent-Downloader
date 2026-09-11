@@ -14,7 +14,7 @@ const ProgressBar = ({ progress }) => (
     </div>
 );
 
-const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder, compactMode }) => {
+const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder, compactMode, onToggleFile }) => {
     const [expanded, setExpanded] = useState(false);
 
     return (
@@ -109,7 +109,7 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder,
 
             <ProgressBar progress={torrent.progress} />
 
-            {expanded && <TorrentDetails torrent={torrent} />}
+            {expanded && <TorrentDetails torrent={torrent} onToggleFile={(fileIndices, selected) => onToggleFile && onToggleFile(torrent.infoHash, fileIndices, selected)} />}
         </div>
     )
 }
@@ -136,7 +136,7 @@ function formatTime(seconds) {
     return `${s}s`;
 }
 
-const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFolder, compactMode }) => {
+const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFolder, compactMode, onToggleFile }) => {
     if (torrents.length === 0) {
         return (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
@@ -182,6 +182,7 @@ const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFo
                                     openFolder={openFolder}
                                     onReverify={onReverify}
                                     compactMode={compactMode}
+                                    onToggleFile={onToggleFile}
                                 />
                             ))}
                         </div>

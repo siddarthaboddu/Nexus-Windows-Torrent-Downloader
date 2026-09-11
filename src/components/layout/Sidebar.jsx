@@ -1,3 +1,4 @@
+import React, { useState, useEffect } from 'react';
 import { useTheme } from '../../contexts/ThemeProvider';
 import { LayoutDashboard, ArrowDownUp, Settings, Activity, Sun, Moon } from 'lucide-react';
 import clsx from 'clsx';
@@ -26,8 +27,28 @@ const formatBytes = (bytes) => {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}/s`;
 };
 
-const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSpeed: 0 } }) => {
+const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSpeed: 0 }, config = {} }) => {
     const { theme, setTheme } = useTheme();
+    const [peakDown, setPeakDown] = useState(10 * 1024 * 1024);
+    const [peakUp, setPeakUp] = useState(2 * 1024 * 1024);
+
+    useEffect(() => {
+        if (stats.downloadSpeed > peakDown) {
+            setPeakDown(stats.downloadSpeed);
+        }
+    }, [stats.downloadSpeed, peakDown]);
+
+    useEffect(() => {
+        if (stats.uploadSpeed > peakUp) {
+            setPeakUp(stats.uploadSpeed);
+        }
+    }, [stats.uploadSpeed, peakUp]);
+
+    const maxDown = (config?.downloadLimit && config.downloadLimit > 0) ? config.downloadLimit : Math.max(peakDown, 10 * 1024 * 1024);
+    const maxUp = (config?.uploadLimit && config.uploadLimit > 0) ? config.uploadLimit : Math.max(peakUp, 2 * 1024 * 1024);
+
+    const downPercent = Math.min(Math.round((stats.downloadSpeed / maxDown) * 100), 100);
+    const upPercent = Math.min(Math.round((stats.uploadSpeed / maxUp) * 100), 100);
 
     return (
         <aside className="w-64 h-full flex flex-col p-4 glass border-r border-border relative z-10 bg-background/60 backdrop-blur-xl">
@@ -94,15 +115,15 @@ const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSp
                     <span className="text-xs text-muted-foreground">Down</span>
                     <span className="text-xs font-mono text-emerald-400">{formatBytes(stats.downloadSpeed)}</span>
                 </div>
-                <div className="w-full h-1 bg-secondary rounded-full mb-3 overflow-hidden">
-                    <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${Math.min((stats.downloadSpeed / (10 * 1024 * 1024)) * 100, 100)}%` }} />
+                <div className="w-full h-1 bg-secondary rounded-full mb-3 overflow-hidden" title={`Limit/Peak: ${formatBytes(maxDown)}`}>
+                    <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${downPercent}%` }} />
                 </div>
                 <div className="flex justify-between items-center mb-2">
                     <span className="text-xs text-muted-foreground">Up</span>
                     <span className="text-xs font-mono text-blue-400">{formatBytes(stats.uploadSpeed)}</span>
                 </div>
-                <div className="w-full h-1 bg-secondary rounded-full overflow-hidden">
-                    <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${Math.min((stats.uploadSpeed / (2 * 1024 * 1024)) * 100, 100)}%` }} />
+                <div className="w-full h-1 bg-secondary rounded-full overflow-hidden" title={`Limit/Peak: ${formatBytes(maxUp)}`}>
+                    <div className="h-full bg-blue-500 transition-all duration-500" style={{ width: `${upPercent}%` }} />
                 </div>
             </div>
         </aside>
