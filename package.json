@@ -17,7 +17,7 @@
     "icon": "build/icon.ico",
     "npmRebuild": false,
     "directories": {
-      "output": "release/${version}"
+      "output": "release"
     },
     "files": [
       "dist-electron/**/*",
