@@ -86,8 +86,17 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
         e.preventDefault();
         setIsLoading(true);
         try {
-            // If filePath has data, wrap in Uint8Array. IPC handles this natively.
-            const payload = filePath?.data ? new Uint8Array(filePath.data) : (magnet || filePath);
+            // If filePath has data ArrayBuffer, wrap in Uint8Array. Otherwise pass path string, magnet, or object.
+            let payload = magnet;
+            if (filePath) {
+                if (filePath.data instanceof ArrayBuffer) {
+                    payload = new Uint8Array(filePath.data);
+                } else if (filePath.path) {
+                    payload = filePath.path;
+                } else {
+                    payload = filePath;
+                }
+            }
 
             await onAdd(payload, destination);
             handleClose();

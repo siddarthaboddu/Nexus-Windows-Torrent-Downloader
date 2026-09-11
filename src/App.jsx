@@ -63,7 +63,7 @@ function App() {
                 setInitialFile(null)
                 setIsAddModalOpen(true)
               } else if (incoming.type === 'file') {
-                setInitialFile({ name: incoming.name, data: incoming.path })
+                setInitialFile({ name: incoming.name, path: incoming.path })
                 setInitialMagnet('')
                 setIsAddModalOpen(true)
               }

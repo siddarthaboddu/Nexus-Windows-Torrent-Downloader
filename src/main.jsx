@@ -1,47 +1,58 @@
-import { StrictMode, useState, useEffect } from 'react'
+import React, { Component, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
+import { ThemeProvider } from './contexts/ThemeProvider'
 
-function ErrorFallback({ error }) {
-  return (
-    <div className="p-10 text-red-500 bg-zinc-900 border border-red-500/20 rounded-lg m-10">
-      <h1 className="text-2xl font-bold mb-4">Application Error</h1>
-      <pre className="whitespace-pre-wrap font-mono text-sm">{error.toString()}</pre>
-      <pre className="mt-4 text-xs text-muted-foreground">{error.stack}</pre>
-    </div>
-  )
-}
-
-function Root() {
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    const handleError = (event) => {
-      setError(event.error || new Error(event.message))
-    }
-    window.addEventListener('error', handleError)
-    window.addEventListener('unhandledrejection', (e) => handleError({ error: e.reason }))
-
-    return () => {
-      window.removeEventListener('error', handleError)
-      window.removeEventListener('unhandledrejection', handleError)
-    }
-  }, [])
-
-  if (error) {
-    return <ErrorFallback error={error} />
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null }
   }
 
-  return <App />
-}
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
 
-import { ThemeProvider } from './contexts/ThemeProvider'
+  componentDidCatch(error, errorInfo) {
+    console.error('ErrorBoundary caught error:', error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-6">
+          <div className="max-w-xl w-full p-6 bg-card border border-destructive/40 rounded-xl shadow-2xl">
+            <h1 className="text-xl font-bold text-destructive mb-2">Application Error</h1>
+            <p className="text-sm text-muted-foreground mb-4">Nexus encountered an unexpected error:</p>
+            <pre className="p-3 bg-secondary/80 rounded-lg font-mono text-xs text-destructive overflow-auto max-h-48 whitespace-pre-wrap">
+              {this.state.error?.toString()}
+            </pre>
+            {this.state.error?.stack && (
+              <pre className="mt-2 p-3 bg-secondary/40 rounded-lg font-mono text-[11px] text-muted-foreground overflow-auto max-h-48 whitespace-pre-wrap">
+                {this.state.error.stack}
+              </pre>
+            )}
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-6 px-4 py-2 bg-primary hover:bg-primary/90 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              Reload Application
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-      <Root />
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
+        <App />
+      </ThemeProvider>
+    </ErrorBoundary>
   </StrictMode>,
 )
