@@ -32,6 +32,14 @@
         "magnet"
       ]
     },
+    "fileAssociations": [
+      {
+        "ext": "torrent",
+        "name": "Torrent File",
+        "description": "BitTorrent File",
+        "role": "Viewer"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true

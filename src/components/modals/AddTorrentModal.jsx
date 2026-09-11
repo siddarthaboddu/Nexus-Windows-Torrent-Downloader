@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Magnet, Upload, Folder, ArrowRight, ArrowLeft } from 'lucide-react';
-const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet }) => {
+const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, initialFile }) => {
     const [step, setStep] = useState(1);
     const [magnet, setMagnet] = useState('');
     const [filePath, setFilePath] = useState(null); // Store selected file path
@@ -9,8 +9,25 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet })
     const fileInputRef = useRef(null);
     const selectFolder = async () => window.ipcRenderer ? window.ipcRenderer.invoke('select-folder') : null;
 
+    const processTorrentFile = (file) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            if (evt.target.readyState === FileReader.DONE) {
+                const arrayBuffer = evt.target.result;
+                setFilePath({
+                    name: file.name,
+                    data: arrayBuffer
+                });
+                setMagnet('');
+                setStep(2);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
     // Update destination when defaultPath changes or modal opens
-    // Also handle initialMagnet
+    // Also handle initialMagnet and initialFile
     useEffect(() => {
         if (defaultPath && !destination) {
             setDestination(defaultPath);
@@ -18,9 +35,14 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet })
 
         if (isOpen && initialMagnet) {
             setMagnet(initialMagnet);
+            setFilePath(null);
             setStep(2); // Auto advance to confirmation
+        } else if (isOpen && initialFile) {
+            setFilePath(initialFile);
+            setMagnet('');
+            setStep(2);
         }
-    }, [defaultPath, isOpen, initialMagnet]);
+    }, [defaultPath, isOpen, initialMagnet, initialFile]);
 
     if (!isOpen) return null;
 
@@ -41,23 +63,7 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet })
     const handleFileSelect = (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
-
-        // Read file immediately to ArrayBuffer to ensure we have content
-        // This bypasses 'file.path' issues in strict Context Isolation
-        const reader = new FileReader();
-        reader.onload = (evt) => {
-            if (evt.target.readyState === FileReader.DONE) {
-                const arrayBuffer = evt.target.result;
-                setFilePath({
-                    name: file.name,
-                    data: arrayBuffer // Store raw data
-                });
-                setMagnet('');
-                setStep(2);
-            }
-        };
-        reader.readAsArrayBuffer(file);
-
+        processTorrentFile(file);
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
@@ -143,10 +149,17 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet })
                                 <button
                                     type="button"
                                     onClick={() => fileInputRef.current?.click()}
+                                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                                    onDrop={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        const file = e.dataTransfer.files?.[0];
+                                        if (file) processTorrentFile(file);
+                                    }}
                                     className="w-full py-8 border-2 border-dashed border-border rounded-xl hover:border-primary/50 hover:bg-primary/5 transition-all group flex flex-col items-center justify-center gap-2 text-muted-foreground hover:text-primary"
                                 >
                                     <Upload size={24} className="group-hover:scale-110 transition-transform" />
-                                    <span className="text-sm">Click to select .torrent file</span>
+                                    <span className="text-sm">Click or drag & drop .torrent file</span>
                                 </button>
 
                                 <div className="flex justify-end pt-2">

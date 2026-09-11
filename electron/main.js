@@ -68,9 +68,17 @@ async function initWebTorrent() {
     console.error('WebTorrent Error:', err)
   })
 
-  // Apply saved limits from memory cache
-  if (appConfig.downloadLimit) client.throttleDownload(appConfig.downloadLimit)
-  if (appConfig.uploadLimit) client.throttleUpload(appConfig.uploadLimit)
+  // Apply saved limits from memory cache (use -1 for unlimited)
+  if (appConfig.downloadLimit && appConfig.downloadLimit > 0) {
+    client.throttleDownload(appConfig.downloadLimit)
+  } else {
+    client.throttleDownload(-1)
+  }
+  if (appConfig.uploadLimit && appConfig.uploadLimit > 0) {
+    client.throttleUpload(appConfig.uploadLimit)
+  } else {
+    client.throttleUpload(-1)
+  }
 }
 
 // Format bytes to human readable
@@ -689,12 +697,74 @@ function setupIpcHandlers() {
       }
     }
   })
+
+  ipcMain.handle('pause-all-torrents', () => {
+    managedTorrents.forEach(t => {
+      if (!t.paused) {
+        const active = client ? client.get(t.infoHash) : null
+        if (active) {
+          const sessionUp = active.uploaded || 0
+          const sessionDown = active.downloaded || 0
+          t.totalUploaded = (t.baseUploaded || 0) + sessionUp
+          t.baseUploaded = t.totalUploaded
+          const targetLength = active.length || t.length || 0
+          t.done = t.done || active.done || active.progress >= 1
+          t.totalDownloaded = t.done && targetLength > 0 ? targetLength : Math.max(t.totalDownloaded || 0, (t.baseDownloaded || 0) + sessionDown)
+          t.baseDownloaded = t.totalDownloaded
+          t.ratio = t.totalDownloaded > 0 ? (t.totalUploaded / t.totalDownloaded) : 0
+          try { client.remove(t.infoHash, () => { }) } catch { }
+        }
+        t.paused = true
+      }
+    })
+    saveTorrentsState()
+    return true
+  })
+
+  ipcMain.handle('resume-all-torrents', () => {
+    if (!client) return false
+    managedTorrents.forEach(t => {
+      if (t.paused) {
+        t.baseUploaded = t.totalUploaded || t.baseUploaded || 0
+        t.baseDownloaded = t.totalDownloaded || t.baseDownloaded || 0
+        try {
+          client.add(t.magnetURI, { path: t.path }, (torrent) => {
+            setupTorrentEventListeners(torrent)
+          })
+        } catch { }
+        t.paused = false
+      }
+    })
+    saveTorrentsState()
+    return true
+  })
+}
+
+function findIncomingTorrent(args) {
+  if (!Array.isArray(args)) return null
+  for (const arg of args) {
+    if (typeof arg !== 'string') continue
+    if (arg.startsWith('magnet:')) {
+      return { type: 'magnet', value: arg }
+    }
+    if (arg.toLowerCase().endsWith('.torrent')) {
+      try {
+        if (fsSync.existsSync(arg)) {
+          return { type: 'file', path: arg, name: path.basename(arg) }
+        }
+      } catch { }
+    }
+  }
+  return null
 }
 
 function createWindow() {
+  const bounds = appConfig.windowBounds || {}
   win = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: bounds.width || 1200,
+    height: bounds.height || 800,
+    x: bounds.x,
+    y: bounds.y,
     frame: false, // Frameless for custom UI
     webPreferences: {
       preload: fsSync.existsSync(path.join(__dirname, 'preload.mjs'))
@@ -713,6 +783,35 @@ function createWindow() {
     }
   })
 
+  if (bounds.isMaximized) {
+    win.maximize()
+  }
+
+  // Debounced window bounds persistence
+  let boundsTimer = null
+  const saveBounds = () => {
+    if (!win) return
+    clearTimeout(boundsTimer)
+    boundsTimer = setTimeout(async () => {
+      if (!win) return
+      try {
+        const isMaximized = win.isMaximized()
+        const currentBounds = isMaximized ? (appConfig.windowBounds || {}) : win.getBounds()
+        appConfig.windowBounds = {
+          ...currentBounds,
+          isMaximized
+        }
+        const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
+        const config = JSON.parse(data || '{}')
+        config.windowBounds = appConfig.windowBounds
+        await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2))
+      } catch (e) { }
+    }, 500)
+  }
+
+  win.on('resize', saveBounds)
+  win.on('move', saveBounds)
+
   win.on('close', (event) => {
     if (isQuitting) return
 
@@ -727,14 +826,15 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     win?.webContents.send('main-process-message', (new Date).toLocaleString())
 
-    // Check for magnet link in startup args (Cold start)
-    const MAGNET_PREFIX = 'magnet:'
-    const magnetLink = process.argv.find(arg => arg.startsWith(MAGNET_PREFIX))
-    if (magnetLink) {
-      console.log('[Main] Found magnet link at startup:', magnetLink)
-      // Small delay to ensure React is fully ready to receive
+    // Check for magnet link or .torrent file in startup args (Cold start)
+    const incoming = findIncomingTorrent(process.argv)
+    if (incoming) {
+      console.log('[Main] Found incoming torrent at startup:', incoming)
       setTimeout(() => {
-        win.webContents.send('open-magnet-link', magnetLink)
+        if (incoming.type === 'magnet') {
+          win?.webContents.send('open-magnet-link', incoming.value)
+        }
+        win?.webContents.send('open-incoming-torrent', incoming)
       }, 1000)
     }
   })
@@ -745,6 +845,50 @@ function createWindow() {
     win.loadFile(path.join(process.env.DIST, 'index.html'))
   }
 }
+
+app.on('before-quit', () => {
+  isQuitting = true
+
+  if (powerSaveId) {
+    try { powerSaveBlocker.stop(powerSaveId) } catch { }
+    powerSaveId = null
+  }
+
+  // Snapshot active torrent metrics to managedTorrents
+  if (client && client.torrents.length > 0) {
+    client.torrents.forEach(t => {
+      const managed = managedTorrents.find(m => m.infoHash === t.infoHash)
+      if (managed) {
+        const sessionUp = t.uploaded || 0
+        const sessionDown = t.downloaded || 0
+        managed.totalUploaded = (managed.baseUploaded || 0) + sessionUp
+        const targetLength = t.length || managed.length || 0
+        const isDone = t.done || managed.done || t.progress >= 1
+        managed.totalDownloaded = isDone && targetLength > 0
+          ? targetLength
+          : Math.max(managed.totalDownloaded || 0, (managed.baseDownloaded || 0) + sessionDown)
+        managed.ratio = managed.totalDownloaded > 0 ? (managed.totalUploaded / managed.totalDownloaded) : 0
+        managed.done = isDone
+        managed.progress = isDone ? 1 : t.progress
+      }
+    })
+  }
+
+  // Synchronously flush state to disk before exiting
+  try {
+    const data = fsSync.readFileSync(CONFIG_PATH, 'utf-8')
+    const config = JSON.parse(data || '{}')
+    config.torrents = managedTorrents
+    fsSync.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2))
+    console.log('[Shutdown] Torrents state saved synchronously.')
+  } catch (e) {
+    console.error('[Shutdown] Failed to flush state on quit:', e)
+  }
+
+  if (client) {
+    try { client.destroy() } catch { }
+  }
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -801,13 +945,14 @@ if (!gotTheLock) {
       if (win.isMinimized()) win.restore()
       win.focus()
 
-      // Find magnet link in arguments
-      const MAGNET_PREFIX = 'magnet:'
-      const magnetLink = commandLine.find(arg => arg.startsWith(MAGNET_PREFIX))
-
-      if (magnetLink) {
-        console.log('[Main] Received magnet link via second-instance:', magnetLink)
-        win.webContents.send('open-magnet-link', magnetLink)
+      // Find incoming torrent in second-instance arguments
+      const incoming = findIncomingTorrent(commandLine)
+      if (incoming) {
+        console.log('[Main] Received incoming torrent via second-instance:', incoming)
+        if (incoming.type === 'magnet') {
+          win.webContents.send('open-magnet-link', incoming.value)
+        }
+        win.webContents.send('open-incoming-torrent', incoming)
       }
     }
   })

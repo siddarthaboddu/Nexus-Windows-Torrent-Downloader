@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowDown, ArrowUp, Pause, Play, Trash2, Package, ChevronDown, ChevronUp, Folder, RotateCw } from 'lucide-react';
+import { ArrowDown, ArrowUp, Pause, Play, Trash2, Package, ChevronDown, ChevronUp, Folder, RotateCw, Link, Check, Search, PauseCircle, PlayCircle } from 'lucide-react';
 import TorrentDetails from './TorrentDetails';
 import clsx from 'clsx';
 
@@ -16,6 +16,16 @@ const ProgressBar = ({ progress }) => (
 
 const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder, compactMode, onToggleFile }) => {
     const [expanded, setExpanded] = useState(false);
+    const [copied, setCopied] = useState(false);
+
+    const handleCopyMagnet = (e) => {
+        e.stopPropagation();
+        if (torrent.magnetURI) {
+            navigator.clipboard.writeText(torrent.magnetURI);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        }
+    };
 
     return (
         <div className={clsx("glass-panel rounded-xl mb-3 hover:bg-secondary/40 transition-all group",
@@ -61,6 +71,14 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder,
                         </button>
 
                         <button
+                            onClick={handleCopyMagnet}
+                            className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition"
+                            title={copied ? "Magnet link copied!" : "Copy Magnet Link"}
+                        >
+                            {copied ? <Check size={16} className="text-emerald-500" /> : <Link size={16} />}
+                        </button>
+
+                        <button
                             onClick={(e) => { e.stopPropagation(); openFolder && openFolder(torrent.infoHash); }}
                             className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition"
                             title="Open Folder"
@@ -71,6 +89,7 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder,
                         <button
                             onClick={(e) => { e.stopPropagation(); onRemove(torrent.infoHash); }}
                             className="p-1.5 hover:bg-destructive/20 rounded text-muted-foreground hover:text-destructive transition"
+                            title="Delete Torrent"
                         >
                             <Trash2 size={16} />
                         </button>
@@ -82,8 +101,6 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder,
                         >
                             <RotateCw size={16} />
                         </button>
-
-
                     </div>
                     <div className="text-muted-foreground pl-2 border-l border-border">
                         {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -92,22 +109,24 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder,
             </div>
 
             <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
-                <div className="flex gap-2">
-                    <span>{(torrent.progress * 100).toFixed(1)}%</span>
-                    {torrent.state === 'Downloading' && torrent.timeRemaining && (
+                <div className="flex items-center gap-2">
+                    <span className="font-medium text-foreground">{((torrent.progress || 0) * 100).toFixed(1)}%</span>
+                    <span>•</span>
+                    <span>{formatBytes(torrent.downloaded || 0)} / {formatBytes(torrent.length || 0)}</span>
+                    {torrent.state === 'Downloading' && torrent.timeRemaining ? (
                         <span className="text-muted-foreground/70">• {formatTime(torrent.timeRemaining)} remaining</span>
-                    )}
+                    ) : null}
                 </div>
                 <div className="flex gap-3">
                     <span className="flex items-center gap-1 text-emerald-500"><ArrowDown size={12} /> {formatBytes(torrent.downloadSpeed)}/s</span>
                     <span className="flex items-center gap-1 text-blue-500"><ArrowUp size={12} /> {formatBytes(torrent.uploadSpeed)}/s</span>
-                    <span title={`${torrent.connectedPeers} Leechers (Downloaders), ${torrent.connectedSeeds} Seeds (Uploaders)`} className="cursor-help border-b border-dotted border-muted-foreground/50">
-                        {torrent.numPeers} peers
+                    <span title={`${torrent.connectedPeers || 0} Leechers, ${torrent.connectedSeeds || 0} Seeds`} className="cursor-help border-b border-dotted border-muted-foreground/50">
+                        {torrent.numPeers || 0} peers
                     </span>
                 </div>
             </div>
 
-            <ProgressBar progress={torrent.progress} />
+            <ProgressBar progress={torrent.progress || 0} />
 
             {expanded && <TorrentDetails torrent={torrent} onToggleFile={(fileIndices, selected) => onToggleFile && onToggleFile(torrent.infoHash, fileIndices, selected)} />}
         </div>
@@ -136,7 +155,9 @@ function formatTime(seconds) {
     return `${s}s`;
 }
 
-const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFolder, compactMode, onToggleFile }) => {
+const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFolder, compactMode, onToggleFile, onPauseAll, onResumeAll }) => {
+    const [searchQuery, setSearchQuery] = useState('');
+
     if (torrents.length === 0) {
         return (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
@@ -145,50 +166,108 @@ const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFo
         )
     }
 
+    const q = searchQuery.trim().toLowerCase();
+    const filteredTorrents = q
+        ? torrents.filter(t => (t.name || '').toLowerCase().includes(q) || (t.infoHash || '').toLowerCase().includes(q))
+        : torrents;
+
     const groups = {
-        Downloading: torrents.filter(t => t.state === 'Downloading'),
-        Seeding: torrents.filter(t => t.state === 'Seeding'),
-        Paused: torrents.filter(t => t.state === 'Paused'),
-        Completed: torrents.filter(t => t.state === 'Completed')
+        Downloading: filteredTorrents.filter(t => t.state === 'Downloading'),
+        Seeding: filteredTorrents.filter(t => t.state === 'Seeding'),
+        Paused: filteredTorrents.filter(t => t.state === 'Paused'),
+        Completed: filteredTorrents.filter(t => t.state === 'Completed')
     };
 
     const groupOrder = ['Downloading', 'Seeding', 'Paused', 'Completed'];
 
     return (
-        <div className="w-full space-y-8">
-            {groupOrder.map(status => {
-                const list = groups[status];
-                if (!list || list.length === 0) return null;
+        <div className="w-full space-y-6">
+            {/* Toolbar: Search and Bulk Actions */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-card/30 p-2.5 rounded-xl border border-border/50">
+                <div className="relative flex-1 max-w-md">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                        type="text"
+                        placeholder="Search torrents by name or hash..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full pl-9 pr-8 py-1.5 bg-secondary/50 border border-border/50 rounded-lg text-sm text-foreground focus:outline-none focus:border-primary transition-colors placeholder:text-muted-foreground/60"
+                    />
+                    {searchQuery && (
+                        <button
+                            onClick={() => setSearchQuery('')}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-foreground p-1"
+                        >
+                            ✕
+                        </button>
+                    )}
+                </div>
 
-                return (
-                    <div key={status} className="animate-in fade-in slide-in-from-bottom-2 duration-300">
-                        <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3 px-1 flex items-center gap-2">
-                            {status}
-                            <span className="bg-secondary text-secondary-foreground px-2 py-0.5 rounded-full text-xs">{list.length}</span>
-                        </h3>
-                        <div className="space-y-3">
-                            {list.map((torrent) => (
-                                <TorrentCard
-                                    key={torrent.infoHash}
-                                    torrent={torrent}
-                                    onRemove={onRemove}
-                                    onTogglePause={() => {
-                                        if (torrent.state === 'Paused' || torrent.state === 'Completed') {
-                                            onResume(torrent.infoHash)
-                                        } else {
-                                            onPause(torrent.infoHash)
-                                        }
-                                    }}
-                                    openFolder={openFolder}
-                                    onReverify={onReverify}
-                                    compactMode={compactMode}
-                                    onToggleFile={onToggleFile}
-                                />
-                            ))}
-                        </div>
-                    </div>
-                );
-            })}
+                <div className="flex items-center gap-2 shrink-0">
+                    {onPauseAll && (
+                        <button
+                            onClick={onPauseAll}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-secondary/60 hover:bg-secondary border border-border/50 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                            title="Pause all active transfers"
+                        >
+                            <PauseCircle size={14} />
+                            <span>Pause All</span>
+                        </button>
+                    )}
+                    {onResumeAll && (
+                        <button
+                            onClick={onResumeAll}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-secondary/60 hover:bg-secondary border border-border/50 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                            title="Resume all paused transfers"
+                        >
+                            <PlayCircle size={14} />
+                            <span>Resume All</span>
+                        </button>
+                    )}
+                </div>
+            </div>
+
+            {filteredTorrents.length === 0 && searchQuery ? (
+                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                    <p className="text-sm">No torrents matching "{searchQuery}"</p>
+                </div>
+            ) : (
+                <div className="space-y-8">
+                    {groupOrder.map(status => {
+                        const list = groups[status];
+                        if (!list || list.length === 0) return null;
+
+                        return (
+                            <div key={status} className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3 px-1 flex items-center gap-2">
+                                    {status}
+                                    <span className="bg-secondary text-secondary-foreground px-2 py-0.5 rounded-full text-xs">{list.length}</span>
+                                </h3>
+                                <div className="space-y-3">
+                                    {list.map((torrent) => (
+                                        <TorrentCard
+                                            key={torrent.infoHash}
+                                            torrent={torrent}
+                                            onRemove={onRemove}
+                                            onTogglePause={() => {
+                                                if (torrent.state === 'Paused' || torrent.state === 'Completed') {
+                                                    onResume(torrent.infoHash)
+                                                } else {
+                                                    onPause(torrent.infoHash)
+                                                }
+                                            }}
+                                            openFolder={openFolder}
+                                            onReverify={onReverify}
+                                            compactMode={compactMode}
+                                            onToggleFile={onToggleFile}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
         </div>
     );
 };

@@ -51,9 +51,13 @@ export function useTorrents() {
         await window.ipcRenderer.invoke('reverify-torrent', infoHash);
     }, []);
 
-    const toggleFileSelection = useCallback(async (infoHash, fileIndexOrIndices, selected) => {
-        await window.ipcRenderer.invoke('toggle-file-selection', infoHash, fileIndexOrIndices, selected);
+    const pauseAll = useCallback(async () => {
+        await window.ipcRenderer.invoke('pause-all-torrents');
     }, []);
 
-    return { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, selectFolder, openFolder, reverify, toggleFileSelection };
+    const resumeAll = useCallback(async () => {
+        await window.ipcRenderer.invoke('resume-all-torrents');
+    }, []);
+
+    return { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, selectFolder, openFolder, reverify, toggleFileSelection, pauseAll, resumeAll };
 }

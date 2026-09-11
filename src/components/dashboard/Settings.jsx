@@ -338,8 +338,11 @@ const Settings = () => {
                             type="number"
                             min="0"
                             placeholder="0 (Unlimited)"
-                            value={config.downloadLimit && config.downloadLimit > 0 ? config.downloadLimit / 1024 : ''}
-                            onChange={(e) => setConfig({ ...config, downloadLimit: Number(e.target.value) * 1024 })}
+                            value={config.downloadLimit > 0 ? config.downloadLimit / 1024 : (config.downloadLimit === 0 ? '0' : '')}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                setConfig({ ...config, downloadLimit: val === '' ? 0 : Math.max(0, Number(val)) * 1024 });
+                            }}
                             className="w-full bg-secondary/50 border border-border/50 rounded-lg px-4 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
                         />
                     </div>
@@ -351,8 +354,11 @@ const Settings = () => {
                             type="number"
                             min="0"
                             placeholder="0 (Unlimited)"
-                            value={config.uploadLimit && config.uploadLimit > 0 ? config.uploadLimit / 1024 : ''}
-                            onChange={(e) => setConfig({ ...config, uploadLimit: Number(e.target.value) * 1024 })}
+                            value={config.uploadLimit > 0 ? config.uploadLimit / 1024 : (config.uploadLimit === 0 ? '0' : '')}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                setConfig({ ...config, uploadLimit: val === '' ? 0 : Math.max(0, Number(val)) * 1024 });
+                            }}
                             className="w-full bg-secondary/50 border border-border/50 rounded-lg px-4 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
                         />
                     </div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { Share2, HardDrive, Clock, Activity, File, Folder, FolderOpen, ChevronRight, ChevronDown } from 'lucide-react';
+import { Share2, HardDrive, Clock, Activity, File, Folder, FolderOpen, ChevronRight, ChevronDown, ArrowUp, ArrowDown, Key, Check } from 'lucide-react';
 import clsx from 'clsx';
 
 // Helper to format time remaining (seconds)
@@ -205,19 +205,29 @@ const FileTreeNode = ({ node, level = 0, onToggleFile }) => {
 const TorrentDetails = ({ torrent, onToggleFile }) => {
     const [speedHistory, setSpeedHistory] = useState([]);
     const [activeTab, setActiveTab] = useState('overview');
+    const [copiedHash, setCopiedHash] = useState(false);
 
-    // Mock accumulating speed history for now
+    const handleCopyHash = () => {
+        if (torrent.infoHash) {
+            navigator.clipboard.writeText(torrent.infoHash);
+            setCopiedHash(true);
+            setTimeout(() => setCopiedHash(false), 2000);
+        }
+    };
+
+    // Accumulate download & upload speed history
     useEffect(() => {
         setSpeedHistory(prev => {
             const newPoint = {
                 time: new Date().toLocaleTimeString(),
-                speed: torrent.downloadSpeed / 1024 / 1024 // MB/s
+                download: +(torrent.downloadSpeed / 1024 / 1024).toFixed(2), // MB/s
+                upload: +(torrent.uploadSpeed / 1024 / 1024).toFixed(2) // MB/s
             };
             const newHistory = [...prev, newPoint];
-            if (newHistory.length > 20) newHistory.shift();
+            if (newHistory.length > 25) newHistory.shift();
             return newHistory;
         });
-    }, [torrent.downloadSpeed]);
+    }, [torrent.downloadSpeed, torrent.uploadSpeed]);
 
     return (
         <div className="mt-4 p-4 glass rounded-xl animate-in slide-in-from-top-2">
@@ -243,35 +253,52 @@ const TorrentDetails = ({ torrent, onToggleFile }) => {
             {activeTab === 'overview' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in fade-in duration-300">
                     {/* Chart */}
-                    <div className="h-64 bg-secondary/50 rounded-xl p-4 border border-border">
-                        <h4 className="text-xs font-semibold text-muted-foreground mb-4 uppercase tracking-wider flex items-center gap-2">
-                            <Activity size={14} /> Download Speed (MB/s)
-                        </h4>
-                        <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={speedHistory} margin={{ top: 10, right: 10, left: -20, bottom: 35 }}>
-                                <defs>
-                                    <linearGradient id="colorSpeed" x1="0" y1="0" x2="0" y2="1">
-                                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                                    </linearGradient>
-                                </defs>
-                                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--muted-foreground))" strokeOpacity={0.1} vertical={false} />
-                                <XAxis dataKey="time" hide />
-                                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={(val) => `${val.toFixed(1)}`} domain={[0, 'dataMax + 0.5']} />
-                                <Tooltip
-                                    contentStyle={{
-                                        backgroundColor: 'hsl(var(--popover))',
-                                        borderColor: 'hsl(var(--border))',
-                                        color: 'hsl(var(--popover-foreground))',
-                                        borderRadius: '0.5rem'
-                                    }}
-                                    itemStyle={{ color: 'hsl(var(--foreground))' }}
-                                    labelStyle={{ display: 'none' }}
-                                    formatter={(val) => [`${val.toFixed(2)} MB/s`, 'Speed']}
-                                />
-                                <Area type="monotone" dataKey="speed" stroke="#3b82f6" fillOpacity={1} fill="url(#colorSpeed)" strokeWidth={2} />
-                            </AreaChart>
-                        </ResponsiveContainer>
+                    <div className="h-64 bg-secondary/50 rounded-xl p-4 border border-border flex flex-col">
+                        <div className="flex items-center justify-between mb-3 shrink-0">
+                            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+                                <Activity size={14} /> Network Speeds
+                            </h4>
+                            <div className="flex items-center gap-3 text-xs">
+                                <span className="flex items-center gap-1.5 text-emerald-500 font-medium">
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500" /> DL: {(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s
+                                </span>
+                                <span className="flex items-center gap-1.5 text-blue-500 font-medium">
+                                    <span className="w-2 h-2 rounded-full bg-blue-500" /> UL: {(torrent.uploadSpeed / 1024 / 1024).toFixed(2)} MB/s
+                                </span>
+                            </div>
+                        </div>
+                        <div className="flex-1 min-h-0">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={speedHistory} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                                    <defs>
+                                        <linearGradient id="colorDownload" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                                        </linearGradient>
+                                        <linearGradient id="colorUpload" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--muted-foreground))" strokeOpacity={0.1} vertical={false} />
+                                    <XAxis dataKey="time" hide />
+                                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={10} tickFormatter={(val) => `${val.toFixed(1)}`} domain={[0, 'dataMax + 0.5']} />
+                                    <Tooltip
+                                        contentStyle={{
+                                            backgroundColor: 'hsl(var(--popover))',
+                                            borderColor: 'hsl(var(--border))',
+                                            color: 'hsl(var(--popover-foreground))',
+                                            borderRadius: '0.5rem'
+                                        }}
+                                        itemStyle={{ color: 'hsl(var(--foreground))' }}
+                                        labelStyle={{ display: 'none' }}
+                                        formatter={(val, name) => [`${Number(val).toFixed(2)} MB/s`, name === 'download' ? 'Download' : 'Upload']}
+                                    />
+                                    <Area type="monotone" dataKey="download" name="download" stroke="#10b981" fillOpacity={1} fill="url(#colorDownload)" strokeWidth={2} />
+                                    <Area type="monotone" dataKey="upload" name="upload" stroke="#3b82f6" fillOpacity={1} fill="url(#colorUpload)" strokeWidth={2} />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        </div>
                     </div>
 
                     {/* Detailed Stats */}
@@ -295,9 +322,16 @@ const TorrentDetails = ({ torrent, onToggleFile }) => {
                                 <HardDrive size={16} /> <span className="text-xs font-medium">Downloaded</span>
                             </div>
                             <div className="text-2xl font-bold text-foreground">{formatBytes(torrent.downloaded)}</div>
-                            <div className="text-xs text-blue-500 mt-1">
+                            <div className="text-xs text-emerald-500 mt-1">
                                 of {formatBytes(torrent.length)}
                             </div>
+                        </div>
+                        <div className="bg-secondary/50 p-4 rounded-xl border border-border">
+                            <div className="flex items-center gap-2 text-muted-foreground mb-2">
+                                <ArrowUp size={16} /> <span className="text-xs font-medium">Uploaded</span>
+                            </div>
+                            <div className="text-2xl font-bold text-foreground">{formatBytes(torrent.uploaded || 0)}</div>
+                            <div className="text-xs text-blue-500 mt-1">Lifetime total</div>
                         </div>
                         <div className="bg-secondary/50 p-4 rounded-xl border border-border">
                             <div className="flex items-center gap-2 text-muted-foreground mb-2">
@@ -307,11 +341,31 @@ const TorrentDetails = ({ torrent, onToggleFile }) => {
                                 {formatTime(torrent.timeRemaining)}
                             </div>
                         </div>
-                        <div className="bg-secondary/50 p-4 rounded-xl border border-border col-span-2">
+                        <div className="bg-secondary/50 p-4 rounded-xl border border-border">
                             <div className="flex items-center gap-2 text-muted-foreground mb-2">
                                 <Activity size={16} /> <span className="text-xs font-medium">Share Ratio</span>
                             </div>
                             <div className="text-2xl font-bold text-foreground">{torrent.ratio?.toFixed(2) || '0.00'}</div>
+                        </div>
+                        <div className="bg-secondary/50 p-4 rounded-xl border border-border col-span-2 flex items-center justify-between gap-4">
+                            <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                                    <Key size={16} /> <span className="text-xs font-medium">Info Hash</span>
+                                </div>
+                                <div className="font-mono text-xs text-foreground truncate select-all">
+                                    {torrent.infoHash || '--'}
+                                </div>
+                            </div>
+                            {torrent.infoHash && (
+                                <button
+                                    onClick={handleCopyHash}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-secondary hover:bg-secondary/80 text-foreground border border-border/60 rounded-lg transition-colors shrink-0"
+                                    title="Copy Info Hash"
+                                >
+                                    {copiedHash ? <Check size={14} className="text-emerald-500" /> : <Key size={14} />}
+                                    <span>{copiedHash ? 'Copied' : 'Copy Hash'}</span>
+                                </button>
+                            )}
                         </div>
                     </div>
                 </div>
