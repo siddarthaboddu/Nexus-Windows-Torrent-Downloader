@@ -15,6 +15,7 @@
     "appId": "com.nexus.torrent",
     "productName": "Nexus Torrent",
     "icon": "build/icon.ico",
+    "npmRebuild": false,
     "directories": {
       "output": "release/${version}"
     },
