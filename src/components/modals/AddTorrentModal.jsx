@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Magnet, Upload, Folder, ArrowRight, ArrowLeft } from 'lucide-react';
-import { useTorrents } from '../../hooks/useTorrents';
-
 const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet }) => {
     const [step, setStep] = useState(1);
     const [magnet, setMagnet] = useState('');
@@ -9,7 +7,7 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet })
     const [destination, setDestination] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const fileInputRef = useRef(null);
-    const { selectFolder } = useTorrents();
+    const selectFolder = async () => window.ipcRenderer ? window.ipcRenderer.invoke('select-folder') : null;
 
     // Update destination when defaultPath changes or modal opens
     // Also handle initialMagnet

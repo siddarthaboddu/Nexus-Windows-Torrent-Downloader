@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs/promises'
+import fsSync from 'node:fs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -465,7 +466,7 @@ function setupIpcHandlers() {
     await saveTorrentsState()
 
     // Delete files if requested
-    if (deleteData && t && t.path) {
+    if (deleteData && t && t.path && t.name) {
       try {
         // Standard WebTorrent behavior:
         // If multi-file: path/name/
@@ -473,7 +474,9 @@ function setupIpcHandlers() {
         // t.path stored in managed state is the download destination directory.
 
         const fullPath = path.join(t.path, t.name)
-        await fs.rm(fullPath, { recursive: true, force: true })
+        if (path.resolve(fullPath) !== path.resolve(t.path)) {
+          await fs.rm(fullPath, { recursive: true, force: true })
+        }
       } catch (e) {
         console.error('Failed to delete files:', e)
         // Optional: send error back to renderer or log
@@ -534,7 +537,7 @@ function setupIpcHandlers() {
     if (t) {
       // Re-add to WebTorrent
       client.add(t.magnetURI, { path: t.path }, (torrent) => {
-        // On success
+        setupTorrentEventListeners(torrent)
       })
       t.paused = false
       saveTorrentsState()
@@ -598,7 +601,9 @@ function createWindow() {
     height: 800,
     frame: false, // Frameless for custom UI
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: fsSync.existsSync(path.join(__dirname, 'preload.mjs'))
+        ? path.join(__dirname, 'preload.mjs')
+        : path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
     },
@@ -713,12 +718,22 @@ if (!gotTheLock) {
 }
 
 app.whenReady().then(async () => {
-  await loadConfig() // Load config first for correct tray/window behavior
-  await loadTorrentsState()
-  await initWebTorrent()
-  await restoreSession() // Resume seeding/downloading
+  try {
+    await loadConfig() // Load config first for correct tray/window behavior
+    await loadTorrentsState()
+  } catch (e) {
+    console.error('[Startup] Failed to load config/state:', e)
+  }
+
   setupIpcHandlers()
   createWindow()
+
+  try {
+    await initWebTorrent()
+    await restoreSession() // Resume seeding/downloading
+  } catch (e) {
+    console.error('[Startup] Failed to initialize WebTorrent:', e)
+  }
 
   // Apply saved Start with Windows setting
   try {
@@ -819,16 +834,11 @@ app.whenReady().then(async () => {
       }
 
       // Update Tray Tooltip if enabled
-      try {
-        const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
-        const config = JSON.parse(data || '{}')
-
-        if (config.showSpeedInTray && tray) {
-          tray.setToolTip(`Nexus Torrent | DL: ${formatBytes(totalDownloadSpeed)}/s | UL: ${formatBytes(totalUploadSpeed)}/s`)
-        } else if (tray) {
-          tray.setToolTip('Nexus Torrent')
-        }
-      } catch (e) { }
+      if (appConfig.showSpeedInTray && tray) {
+        tray.setToolTip(`Nexus Torrent | DL: ${formatBytes(totalDownloadSpeed)}/s | UL: ${formatBytes(totalUploadSpeed)}/s`)
+      } else if (tray) {
+        tray.setToolTip('Nexus Torrent')
+      }
 
       const uiTorrents = managedTorrents.map(managed => {
         const active = activeMap.get(managed.infoHash)
@@ -868,11 +878,10 @@ app.whenReady().then(async () => {
 
       win.webContents.send('torrents-update', uiTorrents)
 
-      // Trigger throttled save
-      // We check if any torrent is active (downloading/seeding) or if state changed,
-      // but simplistic approach: just call saveTorrentsState() which is throttled to 2s.
-      // This ensures if download is happening, we save frequently.
-      saveTorrentsState()
+      // Trigger throttled save only if active torrents exist
+      if (client && client.torrents.length > 0) {
+        saveTorrentsState()
+      }
     }
   }, 1000)
 
@@ -885,6 +894,11 @@ app.whenReady().then(async () => {
 })
 
 function setupTorrentEventListeners(torrent) {
+  // Prevent unhandled error events from crashing the Electron process
+  torrent.on('error', (err) => {
+    console.error(`[Torrent Error] ${torrent.name || torrent.infoHash}:`, err)
+  })
+
   // Listen for tracker updates
   torrent.on('trackerAnnounce', () => {
     console.log(`[Announce] ${torrent.name} announced to tracker`)

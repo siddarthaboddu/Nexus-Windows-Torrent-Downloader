@@ -180,6 +180,7 @@ const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFo
                                         }
                                     }}
                                     openFolder={openFolder}
+                                    onReverify={onReverify}
                                     compactMode={compactMode}
                                 />
                             ))}

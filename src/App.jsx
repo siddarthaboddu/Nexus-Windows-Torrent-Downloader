@@ -20,6 +20,7 @@ function App() {
   useEffect(() => {
     let mounted = true;
     let removeConfigListener = null;
+    let removeMagnetListener = null;
 
     const initConfig = async () => {
       try {
@@ -41,7 +42,7 @@ function App() {
             })
 
             // Listen for magnet links from main process
-            window.ipcRenderer.on('open-magnet-link', (magnetLink) => {
+            removeMagnetListener = window.ipcRenderer.on('open-magnet-link', (magnetLink) => {
               console.log('[App] Received magnet link:', magnetLink)
               if (mounted) {
                 setInitialMagnet(magnetLink)
@@ -60,6 +61,9 @@ function App() {
       mounted = false;
       if (removeConfigListener) {
         removeConfigListener()
+      }
+      if (removeMagnetListener) {
+        removeMagnetListener()
       }
     }
   }, [])

@@ -47,5 +47,9 @@ export function useTorrents() {
         await window.ipcRenderer.invoke('resume-torrent', infoHash);
     }, []);
 
-    return { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, selectFolder, openFolder };
+    const reverify = useCallback(async (infoHash) => {
+        await window.ipcRenderer.invoke('reverify-torrent', infoHash);
+    }, []);
+
+    return { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, selectFolder, openFolder, reverify };
 }
