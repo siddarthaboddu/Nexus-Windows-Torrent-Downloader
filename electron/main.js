@@ -17,6 +17,14 @@ let isQuitting = false
 let appConfig = {} // Cache config in memory for sync access
 let isRestarting = false // Guard against concurrent restarts
 
+// Global process error guards
+process.on('uncaughtException', (err) => {
+  console.error('[Main Process] Uncaught Exception:', err)
+})
+process.on('unhandledRejection', (reason) => {
+  console.error('[Main Process] Unhandled Rejection:', reason)
+})
+
 // Config persistence
 const CONFIG_PATH = path.join(app.getPath('userData'), 'nexus-config.json')
 
@@ -885,15 +893,21 @@ app.on('before-quit', () => {
     console.error('[Shutdown] Failed to flush state on quit:', e)
   }
 
-  if (client) {
-    try { client.destroy() } catch { }
+  if (client && !client.destroyed) {
+    try {
+      client.destroy((err) => {
+        if (err) console.error('[Shutdown] WebTorrent client destroy callback error:', err)
+      })
+    } catch (e) {
+      console.warn('[Shutdown] WebTorrent client destroy exception:', e)
+    }
   }
+  client = null
 })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
-    if (client) client.destroy()
   }
 })
 
