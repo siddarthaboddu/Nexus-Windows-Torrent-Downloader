@@ -15,6 +15,7 @@ A modern, beautiful, and feature-rich torrent client built with Electron, React,
 ## 📋 Table of Contents
 
 - [Features](#-features)
+- [Architecture](#-architecture)
 - [Screenshots](#-screenshots)
 - [Technology Stack](#-technology-stack)
 - [Prerequisites](#-prerequisites)
@@ -85,6 +86,72 @@ A modern, beautiful, and feature-rich torrent client built with Electron, React,
 - **Electron Builder 26.0.12**: Package and build for Windows
 - **ESLint**: Code linting and quality
 - **PostCSS & Autoprefixer**: CSS processing
+
+---
+
+## 🏛️ Architecture
+
+Nexus employs Electron's multi-process architecture with strict process isolation and secure Inter-Process Communication (IPC):
+
+```mermaid
+flowchart TB
+    subgraph Renderer ["Renderer Process (Chromium / React 19)"]
+        UI["React Component Tree (App.jsx)"]
+        Layout["Layout & Sidebar (Speed Gauges)"]
+        Dashboards["TorrentList & TorrentDetails"]
+        SettingsView["Settings (Limits, Port, Tray, Theme)"]
+        Modals["AddTorrentModal & DeleteTorrentModal"]
+        Hook["useTorrents() Custom Hook"]
+
+        UI --> Layout
+        UI --> Dashboards
+        UI --> SettingsView
+        UI --> Modals
+        Dashboards --> Hook
+        Modals --> Hook
+    end
+
+    subgraph Preload ["Preload Boundary (contextBridge)"]
+        Bridge["window.ipcRenderer (send / invoke / on)"]
+    end
+
+    subgraph Main ["Main Process (Node.js / Electron)"]
+        Core["App Lifecycle & Window Management"]
+        IPCHandlers["IPC Handlers (Engine Actions & Config)"]
+        Engine["WebTorrent Engine (P2P Wire Protocol)"]
+        ConfigMgr["Session & Config Persistence (fs/promises)"]
+        SysIntegrations["Windows Shell (Tray, Insomnia, File Association)"]
+
+        Core --> IPCHandlers
+        IPCHandlers --> Engine
+        IPCHandlers --> ConfigMgr
+        Core --> SysIntegrations
+    end
+
+    subgraph External ["Host OS & BitTorrent Swarm"]
+        Swarm(("BitTorrent Swarm (DHT, Trackers, Peers)"))
+        Disk[("Local Filesystem (%APPDATA% & Downloads)")]
+    end
+
+    Hook <--> Bridge
+    Bridge <--> IPCHandlers
+    Engine <--> Swarm
+    Engine <--> Disk
+    ConfigMgr <--> Disk
+```
+
+### Process Separation & Security Model
+
+- **Main Process (`electron/main.js`)**: Runs in full Node.js context with native OS capabilities. Owns the WebTorrent client instance, background swarm listeners, disk I/O, window position/dimension persistence, file associations (`.torrent`), protocol handlers (`magnet:`), and Windows tray/power-save integrations.
+- **Preload Script (`electron/preload.js`)**: Safely exposes a minimal, sanitized IPC surface to the browser via `contextBridge.exposeInMainWorld('ipcRenderer', ...)` with `contextIsolation: true` and `nodeIntegration: false`.
+- **Renderer Process (`src/`)**: Pure React 19 Single Page Application running in Chromium. Renders the user interface, graphs, search filters, and themes without direct access to Node.js APIs or disk files.
+
+### Reactive Data Flow
+
+1. **Swarm Updates**: The WebTorrent engine maintains active peer connections, calculating instantaneous upload/download rates, piece verification, and swarm health.
+2. **1-Second Polling & Diffing**: Every second, the main process gathers stats across all active and paused torrents and pushes a snapshot over the `torrents-update` IPC channel.
+3. **State Reflection**: The `useTorrents` hook receives the snapshot, updating React state cleanly with zero UI stutter.
+4. **Synchronous Quit Flush**: On application shutdown or window close, active progress, ratios, and configurations are atomically flushed to `%APPDATA%\nexus\nexus-config.json` before releasing system resources.
 
 ---
 
