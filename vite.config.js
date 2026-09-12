@@ -19,7 +19,7 @@ export default defineConfig({
         },
       },
       preload: {
-        input: path.join(__dirname, 'electron/preload.js'),
+        input: path.resolve('electron/preload.js'),
       },
       // renderer: {}, // Disabled to prevent renderer_init iterator error
     }),

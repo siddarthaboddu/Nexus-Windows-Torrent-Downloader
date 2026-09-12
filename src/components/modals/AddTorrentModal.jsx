@@ -1,13 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { X, Magnet, Upload, Folder, ArrowRight, ArrowLeft } from 'lucide-react';
+
 const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, initialFile }) => {
-    const [step, setStep] = useState(1);
-    const [magnet, setMagnet] = useState('');
-    const [filePath, setFilePath] = useState(null); // Store selected file path
+    const [step, setStep] = useState((initialMagnet || initialFile) ? 2 : 1);
+    const [magnet, setMagnet] = useState(initialMagnet || '');
+    const [filePath, setFilePath] = useState(initialFile || null);
     const [destination, setDestination] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const fileInputRef = useRef(null);
     const selectFolder = async () => window.ipcRenderer ? window.ipcRenderer.invoke('select-folder') : null;
+
+    const effectiveDestination = destination || defaultPath || '';
 
     const processTorrentFile = (file) => {
         if (!file) return;
@@ -26,32 +29,13 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
         reader.readAsArrayBuffer(file);
     };
 
-    // Update destination when defaultPath changes or modal opens
-    // Also handle initialMagnet and initialFile
-    useEffect(() => {
-        if (defaultPath && !destination) {
-            setDestination(defaultPath);
-        }
-
-        if (isOpen && initialMagnet) {
-            setMagnet(initialMagnet);
-            setFilePath(null);
-            setStep(2); // Auto advance to confirmation
-        } else if (isOpen && initialFile) {
-            setFilePath(initialFile);
-            setMagnet('');
-            setStep(2);
-        }
-    }, [defaultPath, isOpen, initialMagnet, initialFile]);
-
     if (!isOpen) return null;
 
     const resetState = () => {
         setStep(1);
         setMagnet('');
         setFilePath(null);
-        // Don't reset destination if we have a default
-        setDestination(defaultPath || '');
+        setDestination('');
         setIsLoading(false);
     };
 
@@ -98,7 +82,7 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
                 }
             }
 
-            await onAdd(payload, destination);
+            await onAdd(payload, effectiveDestination);
             handleClose();
         } catch (e) {
             console.error(e);
@@ -201,7 +185,7 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
                                             <input
                                                 type="text"
                                                 readOnly
-                                                value={destination || 'Default Download Folder'}
+                                                value={effectiveDestination || 'Default Download Folder'}
                                                 className="w-full bg-input/50 border border-border rounded-xl py-3 pl-10 pr-4 text-foreground cursor-default focus:outline-none"
                                             />
                                         </div>

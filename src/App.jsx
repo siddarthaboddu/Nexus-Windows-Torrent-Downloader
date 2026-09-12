@@ -39,6 +39,14 @@ function App() {
     torrentsRef.current = torrents
   }, [torrents])
 
+  const openDeleteModal = (infoHash) => {
+    const targetHash = (infoHash || '').toLowerCase()
+    const torrent = torrentsRef.current.find(t => (t.infoHash || '').toLowerCase() === targetHash)
+    if (torrent) {
+      setDeleteModal({ isOpen: true, torrent })
+    }
+  }
+
   useEffect(() => {
     let mounted = true;
     let removeConfigListener = null;
@@ -152,6 +160,10 @@ function App() {
 
     const file = e.dataTransfer.files?.[0];
     if (file) {
+      if (!file.name.toLowerCase().endsWith('.torrent')) {
+        alert('Unsupported file type. Please drop a valid .torrent file.');
+        return;
+      }
       const reader = new FileReader();
       reader.onload = (evt) => {
         if (evt.target.readyState === FileReader.DONE) {
@@ -167,12 +179,6 @@ function App() {
     }
   }
 
-  const openDeleteModal = (infoHash) => {
-    const torrent = torrents.find(t => t.infoHash === infoHash)
-    if (torrent) {
-      setDeleteModal({ isOpen: true, torrent })
-    }
-  }
 
   const handleConfirmDelete = (deleteData) => {
     if (deleteModal.torrent) {
@@ -308,6 +314,7 @@ function App() {
         </div>
 
         <AddTorrentModal
+          key={isAddModalOpen ? `${initialMagnet}-${initialFile?.name || 'manual'}` : 'closed'}
           isOpen={isAddModalOpen}
           onClose={() => {
             setIsAddModalOpen(false)

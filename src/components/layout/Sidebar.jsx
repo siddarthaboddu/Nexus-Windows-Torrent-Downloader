@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useTheme } from '../../contexts/ThemeProvider';
 import { LayoutDashboard, ArrowDownUp, Settings, Activity, Sun, Moon } from 'lucide-react';
 import clsx from 'clsx';
@@ -32,17 +32,12 @@ const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSp
     const [peakDown, setPeakDown] = useState(10 * 1024 * 1024);
     const [peakUp, setPeakUp] = useState(2 * 1024 * 1024);
 
-    useEffect(() => {
-        if (stats.downloadSpeed > peakDown) {
-            setPeakDown(stats.downloadSpeed);
-        }
-    }, [stats.downloadSpeed, peakDown]);
-
-    useEffect(() => {
-        if (stats.uploadSpeed > peakUp) {
-            setPeakUp(stats.uploadSpeed);
-        }
-    }, [stats.uploadSpeed, peakUp]);
+    if (stats.downloadSpeed > peakDown) {
+        setPeakDown(stats.downloadSpeed);
+    }
+    if (stats.uploadSpeed > peakUp) {
+        setPeakUp(stats.uploadSpeed);
+    }
 
     const maxDown = (config?.downloadLimit && config.downloadLimit > 0) ? config.downloadLimit : Math.max(peakDown, 10 * 1024 * 1024);
     const maxUp = (config?.uploadLimit && config.uploadLimit > 0) ? config.uploadLimit : Math.max(peakUp, 2 * 1024 * 1024);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { Share2, HardDrive, Clock, Activity, File, Folder, FolderOpen, ChevronRight, ChevronDown, ArrowUp, ArrowDown, Key, Check, ExternalLink, Copy, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -343,19 +343,27 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder })
         }
     };
 
-    // Accumulate download & upload speed history
+    // Sample download & upload speed history periodically
+    const speedRef = useRef({ dl: torrent.downloadSpeed, ul: torrent.uploadSpeed });
     useEffect(() => {
-        setSpeedHistory(prev => {
-            const newPoint = {
-                time: new Date().toLocaleTimeString(),
-                download: +(torrent.downloadSpeed / 1024 / 1024).toFixed(2), // MB/s
-                upload: +(torrent.uploadSpeed / 1024 / 1024).toFixed(2) // MB/s
-            };
-            const newHistory = [...prev, newPoint];
-            if (newHistory.length > 25) newHistory.shift();
-            return newHistory;
-        });
+        speedRef.current = { dl: torrent.downloadSpeed, ul: torrent.uploadSpeed };
     }, [torrent.downloadSpeed, torrent.uploadSpeed]);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setSpeedHistory(prev => {
+                const newPoint = {
+                    time: new Date().toLocaleTimeString(),
+                    download: +(speedRef.current.dl / 1024 / 1024).toFixed(2), // MB/s
+                    upload: +(speedRef.current.ul / 1024 / 1024).toFixed(2) // MB/s
+                };
+                const newHistory = [...prev, newPoint];
+                if (newHistory.length > 25) newHistory.shift();
+                return newHistory;
+            });
+        }, 1000);
+        return () => clearInterval(interval);
+    }, []);
 
     return (
         <div className="mt-4 p-4 glass rounded-xl animate-in slide-in-from-top-2">
@@ -601,7 +609,9 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder })
                                     });
                                     if (resolvedPath) fullPath = resolvedPath;
                                 }
-                            } catch { }
+                            } catch {
+                                // ignore
+                            }
                             navigator.clipboard.writeText(fullPath);
                             setCopiedPath(true);
                             setTimeout(() => {

@@ -150,9 +150,10 @@ async function saveTorrentsState() {
     const data = await fs.readFile(CONFIG_PATH, 'utf-8').catch(() => '{}')
     const config = JSON.parse(data || '{}')
     config.torrents = managedTorrents
-    // config.downloadPath is handled separately or we can merge it here if needed, 
-    // but managedTorrents is the high frequency part.
-    await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2))
+    // Atomic write to prevent file corruption
+    const tmpPath = `${CONFIG_PATH}.tmp`
+    await fs.writeFile(tmpPath, JSON.stringify(config, null, 2))
+    await fs.rename(tmpPath, CONFIG_PATH)
   } catch (e) {
     console.error('Failed to save state:', e)
   } finally {
@@ -174,6 +175,7 @@ async function loadTorrentsState() {
         const totalDownloaded = t.totalDownloaded || t.downloaded || (t.done && t.length ? t.length : 0)
         return {
           ...t,
+          infoHash: (t.infoHash || '').toLowerCase(),
           deselectedFiles: Array.isArray(t.deselectedFiles) ? t.deselectedFiles : [],
           baseUploaded: totalUploaded,
           baseDownloaded: totalDownloaded,
@@ -194,8 +196,6 @@ async function loadConfig() {
   }
 }
 
-// Track swarm stats per torrent
-const swarmStats = new Map() // infoHash -> { seeds: 0, peers: 0 }
 
 function setupIpcHandlers() {
   ipcMain.handle('select-folder', async () => {
@@ -234,9 +234,11 @@ function setupIpcHandlers() {
     // Save as new default
     await saveLastDownloadPath(downloadDir)
 
-    // Robust file handling: If it looks like a torrent file path, read it to buffer
+    // Robust file handling: If Uint8Array or Buffer, wrap in Buffer. If file path, read it to buffer.
     let torrentSource = torrentId;
-    if (typeof torrentId === 'string' && (torrentId.endsWith('.torrent') || torrentId.includes(path.sep))) {
+    if (torrentId instanceof Uint8Array || Buffer.isBuffer(torrentId)) {
+      torrentSource = Buffer.from(torrentId);
+    } else if (typeof torrentId === 'string' && (torrentId.endsWith('.torrent') || torrentId.includes(path.sep))) {
       try {
         // Try to read it as a file
         const buffer = await fs.readFile(torrentId);
@@ -254,11 +256,12 @@ function setupIpcHandlers() {
 
         // Add to WebTorrent
         client.add(torrentSource, { path: downloadDir }, (torrent) => {
+          const normHash = (torrent.infoHash || '').toLowerCase();
           // Add to managed state
-          const exists = managedTorrents.find(t => t.infoHash === torrent.infoHash)
+          const exists = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === normHash)
           if (!exists) {
             managedTorrents.push({
-              infoHash: torrent.infoHash,
+              infoHash: normHash,
               magnetURI: torrent.magnetURI,
               path: downloadDir,
               paused: false,
@@ -276,7 +279,7 @@ function setupIpcHandlers() {
           setupTorrentEventListeners(torrent)
 
           resolve({
-            infoHash: torrent.infoHash,
+            infoHash: normHash,
             name: torrent.name,
             magnetURI: torrent.magnetURI
           })
@@ -289,11 +292,12 @@ function setupIpcHandlers() {
   })
 
   function openTorrentFolderInternal(infoHash) {
+    const targetHash = (infoHash || '').toLowerCase();
     let torrentPath = null;
     let torrentName = null;
 
     if (client) {
-      const active = client.get(infoHash);
+      const active = client.get(targetHash);
       if (active) {
         torrentPath = active.path;
         torrentName = active.name;
@@ -301,7 +305,7 @@ function setupIpcHandlers() {
     }
 
     if (!torrentPath) {
-      const managed = managedTorrents.find(t => t.infoHash === infoHash);
+      const managed = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash);
       if (managed) {
         torrentPath = managed.path;
         torrentName = managed.name;
@@ -553,8 +557,9 @@ function setupIpcHandlers() {
   })
 
   ipcMain.handle('show-torrent-context-menu', async (event, infoHash) => {
-    const t = managedTorrents.find(m => m.infoHash === infoHash);
-    const active = client ? client.get(infoHash) : null;
+    const targetHash = (infoHash || '').toLowerCase();
+    const t = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === targetHash);
+    const active = client ? client.get(targetHash) : null;
     const isPaused = t ? t.paused : !active;
 
     const template = [
@@ -705,7 +710,8 @@ function setupIpcHandlers() {
     const activeMap = new Map()
     if (client) {
       client.torrents.forEach(t => {
-        const managed = managedTorrents.find(m => m.infoHash === t.infoHash)
+        const tHash = (t.infoHash || '').toLowerCase()
+        const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === tHash)
         const baseUp = managed?.baseUploaded || 0
         const baseDown = managed?.baseDownloaded || 0
         const lifetimeUploaded = baseUp + (t.uploaded || 0)
@@ -727,8 +733,8 @@ function setupIpcHandlers() {
           index: idx
         }))
 
-        activeMap.set(t.infoHash, {
-          infoHash: t.infoHash,
+        activeMap.set(tHash, {
+          infoHash: tHash,
           name: t.name,
           progress: isDone ? 1 : t.progress,
           downloadSpeed: t.downloadSpeed,
@@ -748,7 +754,8 @@ function setupIpcHandlers() {
 
     // Merge with managed state
     return managedTorrents.map(managed => {
-      const active = activeMap.get(managed.infoHash)
+      const mHash = (managed.infoHash || '').toLowerCase()
+      const active = activeMap.get(mHash)
       if (active) {
         // Update managed name if missing
         if (!managed.name && active.name) {
@@ -763,7 +770,7 @@ function setupIpcHandlers() {
 
         // It's paused or error or loading - use persisted values
         return {
-          infoHash: managed.infoHash,
+          infoHash: mHash,
           name: managed.name || 'Paused Torrent',
           progress: (managed.done || managed.progress >= 1) ? 1 : (managed.progress || 0),
           downloadSpeed: 0,
@@ -788,24 +795,25 @@ function setupIpcHandlers() {
   })
 
   ipcMain.handle('remove-torrent', async (event, infoHash, deleteData) => {
+    const targetHash = (infoHash || '').toLowerCase()
     // Find the torrent to get details
-    let t = managedTorrents.find(t => t.infoHash === infoHash)
+    let t = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
 
     // Fallback to active torrent if not found in managed (edge case)
     if (!t && client) {
-      const active = client.get(infoHash)
+      const active = client.get(targetHash)
       if (active) t = { name: active.name, path: active.path }
     }
 
     if (client) {
       // Remove from client
       try {
-        client.remove(infoHash, (e) => { })
+        client.remove(targetHash, () => { })
       } catch (e) { }
     }
 
     // Remove from managed state
-    managedTorrents = managedTorrents.filter(mt => mt.infoHash !== infoHash)
+    managedTorrents = managedTorrents.filter(mt => (mt.infoHash || '').toLowerCase() !== targetHash)
     await saveTorrentsState()
 
     // Delete files if requested
@@ -830,11 +838,12 @@ function setupIpcHandlers() {
   ipcMain.handle('pause-torrent', (event, infoHash) => {
     if (!client) return
 
+    const targetHash = (infoHash || '').toLowerCase()
     // Get active torrent to save state
-    const torrent = client.get(infoHash)
+    const torrent = client.get(targetHash)
 
     // Update managed state with final progress
-    const t = managedTorrents.find(t => t.infoHash === infoHash)
+    const t = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
     if (t) {
       if (torrent) {
         const sessionUp = torrent.uploaded || 0
@@ -868,7 +877,7 @@ function setupIpcHandlers() {
     // Remove from WebTorrent client
     if (torrent) {
       try {
-        client.remove(infoHash, (err) => { if (err) console.warn(err) })
+        client.remove(targetHash, (err) => { if (err) console.warn(err) })
       } catch (e) { console.warn('Remove failed:', e) }
     }
   })
@@ -876,7 +885,8 @@ function setupIpcHandlers() {
   ipcMain.handle('resume-torrent', (event, infoHash) => {
     if (!client) return
 
-    const t = managedTorrents.find(t => t.infoHash === infoHash)
+    const targetHash = (infoHash || '').toLowerCase()
+    const t = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
     if (t) {
       // Re-anchor base stats so session addition is correct
       t.baseUploaded = t.totalUploaded || t.baseUploaded || 0
@@ -892,12 +902,13 @@ function setupIpcHandlers() {
   })
 
   function applyToggleFileSelection(infoHash, fileIndexOrIndices, selected) {
+    const targetHash = (infoHash || '').toLowerCase()
     const indices = Array.isArray(fileIndexOrIndices) ? fileIndexOrIndices : [fileIndexOrIndices]
-    const managed = managedTorrents.find(t => t.infoHash === infoHash)
+    const managed = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
     if (managed) {
       managed.deselectedFiles = managed.deselectedFiles || []
     }
-    const active = client ? client.get(infoHash) : null
+    const active = client ? client.get(targetHash) : null
 
     for (const idx of indices) {
       if (active && active.files && active.files[idx]) {
@@ -957,14 +968,15 @@ function setupIpcHandlers() {
   ipcMain.handle('reverify-torrent', (event, infoHash) => {
     if (!client) return
 
-    const t = managedTorrents.find(t => t.infoHash === infoHash)
+    const targetHash = (infoHash || '').toLowerCase()
+    const t = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
     if (t) {
       console.log(`[Reverify] Force re-checking ${t.name}...`)
 
       // Remove from active client first (keeping data)
-      const active = client.get(infoHash)
+      const active = client.get(targetHash)
       if (active) {
-        client.remove(infoHash, (e) => {
+        client.remove(targetHash, () => {
           // Once removed, immediately re-add to force hashing
           // Ensure we set paused=false
           t.paused = false
@@ -989,7 +1001,8 @@ function setupIpcHandlers() {
   ipcMain.handle('pause-all-torrents', () => {
     managedTorrents.forEach(t => {
       if (!t.paused) {
-        const active = client ? client.get(t.infoHash) : null
+        const tHash = (t.infoHash || '').toLowerCase()
+        const active = client ? client.get(tHash) : null
         if (active) {
           const sessionUp = active.uploaded || 0
           const sessionDown = active.downloaded || 0
@@ -1000,7 +1013,7 @@ function setupIpcHandlers() {
           t.totalDownloaded = t.done && targetLength > 0 ? targetLength : Math.max(t.totalDownloaded || 0, (t.baseDownloaded || 0) + sessionDown)
           t.baseDownloaded = t.totalDownloaded
           t.ratio = t.totalDownloaded > 0 ? (t.totalUploaded / t.totalDownloaded) : 0
-          try { client.remove(t.infoHash, () => { }) } catch { }
+          try { client.remove(tHash, () => { }) } catch { }
         }
         t.paused = true
       }
@@ -1342,7 +1355,8 @@ app.whenReady().then(async () => {
 
 
 
-          const managed = managedTorrents.find(m => m.infoHash === t.infoHash)
+          const tHash = (t.infoHash || '').toLowerCase()
+          const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === tHash)
           const baseUp = managed?.baseUploaded || 0
           const baseDown = managed?.baseDownloaded || 0
           const lifetimeUploaded = baseUp + (t.uploaded || 0)
@@ -1364,8 +1378,8 @@ app.whenReady().then(async () => {
             index: idx
           }))
 
-          activeMap.set(t.infoHash, {
-            infoHash: t.infoHash,
+          activeMap.set(tHash, {
+            infoHash: tHash,
             name: t.name,
             progress: isDone ? 1 : t.progress,
             downloadSpeed: t.downloadSpeed,
@@ -1393,7 +1407,8 @@ app.whenReady().then(async () => {
       }
 
       const uiTorrents = managedTorrents.map(managed => {
-        const active = activeMap.get(managed.infoHash)
+        const mHash = (managed.infoHash || '').toLowerCase()
+        const active = activeMap.get(mHash)
         if (active) {
           // Sync crucial stats to managed state (persisted on pause)
           managed.progress = active.progress
@@ -1415,7 +1430,7 @@ app.whenReady().then(async () => {
         const pRatio = managed.ratio || (pTotalDown > 0 ? (pTotalUp / pTotalDown) : 0)
 
         return {
-          infoHash: managed.infoHash,
+          infoHash: mHash,
           name: managed.name || 'Paused',
           progress: managed.done ? 1 : (managed.progress || 0),
           downloadSpeed: 0,
@@ -1455,7 +1470,8 @@ app.whenReady().then(async () => {
 })
 
 function applyFileSelections(torrent) {
-  const managed = managedTorrents.find(mt => mt.infoHash === torrent.infoHash)
+  const normHash = (torrent.infoHash || '').toLowerCase()
+  const managed = managedTorrents.find(mt => (mt.infoHash || '').toLowerCase() === normHash)
   if (!managed || !Array.isArray(managed.deselectedFiles) || managed.deselectedFiles.length === 0) return
 
   const apply = () => {
