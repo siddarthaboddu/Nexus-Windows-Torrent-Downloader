@@ -165,6 +165,10 @@ Nexus-Windows-Torrent-Downloader/
 | `reverify-torrent` | Renderer → Main (Invoke) | `infoHash: string` | Forces hash re-check of existing files on disk |
 | `select-folder` | Renderer → Main (Invoke) | None | Opens Windows folder picker dialog |
 | `open-torrent-folder`| Renderer → Main (Invoke) | `infoHash: string` | Opens Windows Explorer to torrent download folder |
+| `open-torrent-file`  | Renderer → Main (Invoke) | `{ infoHash: string, filePath: string }` | Directly opens specific file with native Windows default app |
+| `open-torrent-file-folder` | Renderer → Main (Invoke) | `{ infoHash: string, filePath: string }` | Opens Windows Explorer highlighting the specific file |
+| `show-torrent-file-menu` | Renderer → Main (Invoke) | `{ infoHash, filePath, isFolder, isSelected, fileIndex }` | Displays native Windows context menu on a file/folder |
+| `show-torrent-context-menu` | Renderer → Main (Invoke) | `infoHash: string` | Displays native Windows context menu on a torrent card |
 | `get-config` | Renderer → Main (Invoke) | None | Retrieves persistent application configuration |
 | `set-config` | Renderer → Main (Invoke) | `Partial<Config>` | Updates and persists application configuration |
 | `get-random-port` | Renderer → Main (Invoke) | None | Generates random port between 1024 and 65535 |

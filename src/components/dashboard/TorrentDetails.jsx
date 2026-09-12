@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { Share2, HardDrive, Clock, Activity, File, Folder, FolderOpen, ChevronRight, ChevronDown, ArrowUp, ArrowDown, Key, Check } from 'lucide-react';
+import { Share2, HardDrive, Clock, Activity, File, Folder, FolderOpen, ChevronRight, ChevronDown, ArrowUp, ArrowDown, Key, Check, ExternalLink, Copy, X } from 'lucide-react';
 import clsx from 'clsx';
 
 // Helper to format time remaining (seconds)
@@ -35,11 +35,14 @@ const buildFileTree = (files) => {
         // Normalize path separators and split
         const parts = file.path.split(/[\\/]/);
         let current = root;
+        let currentPath = '';
 
         parts.forEach((part, i) => {
+            currentPath = currentPath ? `${currentPath}/${part}` : part;
             if (!current[part]) {
                 current[part] = {
                     name: part,
+                    path: currentPath,
                     type: i === parts.length - 1 ? 'file' : 'folder',
                     children: {},
                     fileData: i === parts.length - 1 ? fileData : null
@@ -90,12 +93,13 @@ const getFolderSelectionStatus = (node) => {
     return { checked: false, indeterminate: true };
 };
 
-const FileTreeNode = ({ node, level = 0, onToggleFile }) => {
+const FileTreeNode = ({ node, level = 0, onToggleFile, infoHash, onOpenFile, onOpenFileFolder, onContextMenu }) => {
     const [isOpen, setIsOpen] = useState(level === 0);
     const folderCheckboxRef = React.useRef(null);
 
     const isFolder = node.type === 'folder';
     const folderStatus = isFolder ? getFolderSelectionStatus(node) : null;
+    const filePath = isFolder ? node.path : (node.fileData?.path || node.path);
 
     React.useEffect(() => {
         if (folderCheckboxRef.current && isFolder) {
@@ -117,6 +121,34 @@ const FileTreeNode = ({ node, level = 0, onToggleFile }) => {
         }
     };
 
+    const handleContextMenu = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onContextMenu) {
+            onContextMenu(e, node, filePath, isFolder);
+        }
+    };
+
+    const handleDoubleClick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (isFolder) {
+            setIsOpen(!isOpen);
+        } else {
+            if (onOpenFile) {
+                onOpenFile(infoHash, filePath);
+            } else if (window.ipcRenderer) {
+                window.ipcRenderer.invoke('open-torrent-file', { infoHash, filePath });
+            }
+        }
+    };
+
+    const handleClick = () => {
+        if (isFolder) {
+            setIsOpen(!isOpen);
+        }
+    };
+
     // Sort children: folders first, then files
     const sortedChildren = node.children
         ? Object.values(node.children).sort((a, b) => {
@@ -131,13 +163,16 @@ const FileTreeNode = ({ node, level = 0, onToggleFile }) => {
         <div className="select-none">
             <div
                 className={clsx(
-                    "flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors",
+                    "flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors group",
                     node.type === 'folder'
                         ? 'hover:bg-secondary text-foreground'
                         : 'hover:bg-secondary text-muted-foreground'
                 )}
                 style={{ paddingLeft: `${level * 1.5 + 0.5}rem` }}
-                onClick={() => node.type === 'folder' && setIsOpen(!isOpen)}
+                onClick={handleClick}
+                onDoubleClick={handleDoubleClick}
+                onContextMenu={handleContextMenu}
+                title={node.type === 'file' ? "Double-click to open • Right-click for options" : "Right-click for options"}
             >
                 {/* Expander Icon for Folders */}
                 <div className="w-4 h-4 flex items-center justify-center shrink-0 text-muted-foreground">
@@ -188,13 +223,52 @@ const FileTreeNode = ({ node, level = 0, onToggleFile }) => {
                         </span>
                     </div>
                 )}
+
+                {/* Quick Actions (shown on hover) */}
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-1">
+                    {node.type === 'file' && (
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (onOpenFile) onOpenFile(infoHash, filePath);
+                                else if (window.ipcRenderer) window.ipcRenderer.invoke('open-torrent-file', { infoHash, filePath });
+                            }}
+                            className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors"
+                            title="Open file"
+                        >
+                            <ExternalLink size={14} />
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            if (onOpenFileFolder) onOpenFileFolder(infoHash, filePath);
+                            else if (window.ipcRenderer) window.ipcRenderer.invoke('open-torrent-file-folder', { infoHash, filePath });
+                        }}
+                        className="p-1 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition-colors"
+                        title={node.type === 'folder' ? "Open folder in Explorer" : "Open containing folder"}
+                    >
+                        <FolderOpen size={14} />
+                    </button>
+                </div>
             </div>
 
             {/* Recursively Render Children */}
             {isOpen && node.type === 'folder' && (
                 <div className="animate-in slide-in-from-top-1 duration-200 fade-in">
                     {sortedChildren.map((child) => (
-                        <FileTreeNode key={child.name} node={child} level={level + 1} onToggleFile={onToggleFile} />
+                        <FileTreeNode
+                            key={child.name}
+                            node={child}
+                            level={level + 1}
+                            onToggleFile={onToggleFile}
+                            infoHash={infoHash}
+                            onOpenFile={onOpenFile}
+                            onOpenFileFolder={onOpenFileFolder}
+                            onContextMenu={onContextMenu}
+                        />
                     ))}
                 </div>
             )}
@@ -202,10 +276,64 @@ const FileTreeNode = ({ node, level = 0, onToggleFile }) => {
     );
 };
 
-const TorrentDetails = ({ torrent, onToggleFile }) => {
+const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder }) => {
     const [speedHistory, setSpeedHistory] = useState([]);
     const [activeTab, setActiveTab] = useState('overview');
     const [copiedHash, setCopiedHash] = useState(false);
+    const [contextMenu, setContextMenu] = useState(null);
+    const [copiedPath, setCopiedPath] = useState(false);
+
+    useEffect(() => {
+        if (!contextMenu) return;
+
+        const handleOutside = (e) => {
+            if (!e.target.closest('#torrent-file-context-menu')) {
+                setContextMenu(null);
+            }
+        };
+
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape') setContextMenu(null);
+        };
+
+        window.addEventListener('pointerdown', handleOutside);
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('scroll', () => setContextMenu(null), true);
+
+        return () => {
+            window.removeEventListener('pointerdown', handleOutside);
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('scroll', () => setContextMenu(null), true);
+        };
+    }, [contextMenu]);
+
+    const handleContextMenu = (e, node, filePath, isFolder) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const menuWidth = 230;
+        const menuHeight = 220;
+        let x = e.clientX;
+        let y = e.clientY;
+
+        if (x + menuWidth > window.innerWidth) {
+            x = window.innerWidth - menuWidth - 10;
+        }
+        if (y + menuHeight > window.innerHeight) {
+            y = window.innerHeight - menuHeight - 10;
+        }
+
+        setCopiedPath(false);
+        setContextMenu({
+            x: Math.max(10, x),
+            y: Math.max(10, y),
+            filePath,
+            isFolder,
+            isSelected: node.fileData?.selected !== false,
+            fileIndex: node.fileData?.index,
+            name: node.name
+        });
+    };
 
     const handleCopyHash = () => {
         if (torrent.infoHash) {
@@ -376,7 +504,16 @@ const TorrentDetails = ({ torrent, onToggleFile }) => {
                             (() => {
                                 const tree = buildFileTree(torrent.files);
                                 return Object.values(tree).map((node) => (
-                                    <FileTreeNode key={node.name} node={node} level={0} onToggleFile={onToggleFile} />
+                                    <FileTreeNode
+                                        key={node.name}
+                                        node={node}
+                                        level={0}
+                                        onToggleFile={onToggleFile}
+                                        infoHash={torrent.infoHash}
+                                        onOpenFile={onOpenFile}
+                                        onOpenFileFolder={onOpenFileFolder}
+                                        onContextMenu={handleContextMenu}
+                                    />
                                 ));
                             })()
                         ) : (
@@ -385,6 +522,125 @@ const TorrentDetails = ({ torrent, onToggleFile }) => {
                             </div>
                         )}
                     </div>
+                </div>
+            )}
+
+            {/* In-App Right-Click Context Menu */}
+            {contextMenu && (
+                <div
+                    id="torrent-file-context-menu"
+                    className="fixed z-50 min-w-[210px] bg-popover/95 backdrop-blur-md text-popover-foreground border border-border/80 rounded-xl shadow-2xl p-1.5 animate-in fade-in zoom-in-95 duration-100 select-none text-xs font-medium"
+                    style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    {/* Header with File/Folder Name */}
+                    <div className="px-2.5 py-1.5 mb-1 text-[11px] text-muted-foreground truncate border-b border-border/50 max-w-[240px]" title={contextMenu.name}>
+                        {contextMenu.name}
+                    </div>
+
+                    {/* Action 1: Open File / Open Folder */}
+                    {!contextMenu.isFolder ? (
+                        <button
+                            type="button"
+                            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-secondary text-foreground hover:text-foreground transition-colors text-left"
+                            onClick={() => {
+                                const fp = contextMenu.filePath;
+                                setContextMenu(null);
+                                if (onOpenFile) onOpenFile(torrent.infoHash, fp);
+                                else if (window.ipcRenderer) window.ipcRenderer.invoke('open-torrent-file', { infoHash: torrent.infoHash, filePath: fp });
+                            }}
+                        >
+                            <ExternalLink size={15} className="text-primary" />
+                            <span>Open File</span>
+                        </button>
+                    ) : (
+                        <button
+                            type="button"
+                            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-secondary text-foreground hover:text-foreground transition-colors text-left"
+                            onClick={() => {
+                                const fp = contextMenu.filePath;
+                                setContextMenu(null);
+                                if (onOpenFileFolder) onOpenFileFolder(torrent.infoHash, fp);
+                                else if (window.ipcRenderer) window.ipcRenderer.invoke('open-torrent-file-folder', { infoHash: torrent.infoHash, filePath: fp });
+                            }}
+                        >
+                            <FolderOpen size={15} className="text-primary" />
+                            <span>Open Folder</span>
+                        </button>
+                    )}
+
+                    {/* Action 2: Open Containing Folder */}
+                    <button
+                        type="button"
+                        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-secondary text-foreground hover:text-foreground transition-colors text-left"
+                        onClick={() => {
+                            const fp = contextMenu.filePath;
+                            setContextMenu(null);
+                            if (onOpenFileFolder) onOpenFileFolder(torrent.infoHash, fp);
+                            else if (window.ipcRenderer) window.ipcRenderer.invoke('open-torrent-file-folder', { infoHash: torrent.infoHash, filePath: fp });
+                        }}
+                    >
+                        <FolderOpen size={15} className="text-muted-foreground" />
+                        <span>{contextMenu.isFolder ? 'Show in Explorer' : 'Open Containing Folder'}</span>
+                    </button>
+
+                    <div className="h-px bg-border/60 my-1" />
+
+                    {/* Action 3: Copy File / Folder Path */}
+                    <button
+                        type="button"
+                        className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-secondary text-foreground hover:text-foreground transition-colors text-left"
+                        onClick={async () => {
+                            const fp = contextMenu.filePath;
+                            let fullPath = fp;
+                            try {
+                                if (window.ipcRenderer) {
+                                    const resolvedPath = await window.ipcRenderer.invoke('get-torrent-file-path', {
+                                        infoHash: torrent.infoHash,
+                                        filePath: fp
+                                    });
+                                    if (resolvedPath) fullPath = resolvedPath;
+                                }
+                            } catch { }
+                            navigator.clipboard.writeText(fullPath);
+                            setCopiedPath(true);
+                            setTimeout(() => {
+                                setContextMenu(null);
+                            }, 500);
+                        }}
+                    >
+                        {copiedPath ? <Check size={15} className="text-emerald-500" /> : <Copy size={15} className="text-muted-foreground" />}
+                        <span>{copiedPath ? 'Copied to Clipboard!' : (contextMenu.isFolder ? 'Copy Folder Path' : 'Copy File Path')}</span>
+                    </button>
+
+                    {/* Action 4: Include / Exclude Download */}
+                    {!contextMenu.isFolder && typeof contextMenu.fileIndex === 'number' && onToggleFile && (
+                        <>
+                            <div className="h-px bg-border/60 my-1" />
+                            <button
+                                type="button"
+                                className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg hover:bg-secondary text-foreground hover:text-foreground transition-colors text-left"
+                                onClick={() => {
+                                    const idx = contextMenu.fileIndex;
+                                    const newSel = !contextMenu.isSelected;
+                                    setContextMenu(null);
+                                    onToggleFile([idx], newSel);
+                                }}
+                            >
+                                {contextMenu.isSelected ? (
+                                    <>
+                                        <X size={15} className="text-muted-foreground" />
+                                        <span>Exclude from Download</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Check size={15} className="text-emerald-500" />
+                                        <span>Include in Download</span>
+                                    </>
+                                )}
+                            </button>
+                        </>
+                    )}
                 </div>
             )}
         </div>

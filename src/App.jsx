@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Layout from './components/layout/Layout'
 import TorrentList from './components/dashboard/TorrentList'
 import Settings from './components/dashboard/Settings'
@@ -10,7 +10,22 @@ import { Plus } from 'lucide-react'
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
-  const { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, openFolder, reverify, toggleFileSelection, pauseAll, resumeAll } = useTorrents()
+  const {
+    torrents,
+    addTorrent,
+    removeTorrent,
+    pauseTorrent,
+    resumeTorrent,
+    openFolder,
+    reverify,
+    toggleFileSelection,
+    pauseAll,
+    resumeAll,
+    openFile,
+    openFileFolder,
+    showFileContextMenu,
+    showTorrentContextMenu
+  } = useTorrents()
 
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, torrent: null })
   const [defaultPath, setDefaultPath] = useState('')
@@ -19,11 +34,19 @@ function App() {
   const [initialFile, setInitialFile] = useState(null)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
 
+  const torrentsRef = useRef(torrents)
+  useEffect(() => {
+    torrentsRef.current = torrents
+  }, [torrents])
+
   useEffect(() => {
     let mounted = true;
     let removeConfigListener = null;
     let removeMagnetListener = null;
     let removeIncomingListener = null;
+    let removeTogglePause = null;
+    let removeDeleteTorrent = null;
+    let removeReverify = null;
 
     const initConfig = async () => {
       try {
@@ -68,6 +91,26 @@ function App() {
                 setIsAddModalOpen(true)
               }
             })
+
+            // Context menu event listeners
+            removeTogglePause = window.ipcRenderer.on('context-menu-toggle-pause', (hash) => {
+              const target = torrentsRef.current.find(t => t.infoHash === hash)
+              if (target) {
+                if (target.state === 'Paused' || target.state === 'Completed') {
+                  resumeTorrent(hash)
+                } else {
+                  pauseTorrent(hash)
+                }
+              }
+            })
+
+            removeDeleteTorrent = window.ipcRenderer.on('context-menu-delete-torrent', (hash) => {
+              openDeleteModal(hash)
+            })
+
+            removeReverify = window.ipcRenderer.on('context-menu-reverify', (hash) => {
+              reverify(hash)
+            })
           }
         }
       } catch (e) {
@@ -81,6 +124,9 @@ function App() {
       if (removeConfigListener) removeConfigListener();
       if (removeMagnetListener) removeMagnetListener();
       if (removeIncomingListener) removeIncomingListener();
+      if (removeTogglePause) removeTogglePause();
+      if (removeDeleteTorrent) removeDeleteTorrent();
+      if (removeReverify) removeReverify();
     }
   }, [])
 
@@ -226,6 +272,10 @@ function App() {
                   onToggleFile={toggleFileSelection}
                   onPauseAll={pauseAll}
                   onResumeAll={resumeAll}
+                  openFile={openFile}
+                  openFileFolder={openFileFolder}
+                  showFileContextMenu={showFileContextMenu}
+                  showTorrentContextMenu={showTorrentContextMenu}
                 />
               </div>
             </div>
@@ -244,6 +294,10 @@ function App() {
                 onToggleFile={toggleFileSelection}
                 onPauseAll={pauseAll}
                 onResumeAll={resumeAll}
+                openFile={openFile}
+                openFileFolder={openFileFolder}
+                showFileContextMenu={showFileContextMenu}
+                showTorrentContextMenu={showTorrentContextMenu}
               />
             </div>
           )}

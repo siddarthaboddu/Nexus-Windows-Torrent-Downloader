@@ -63,5 +63,41 @@ export function useTorrents() {
         await window.ipcRenderer.invoke('resume-all-torrents');
     }, []);
 
-    return { torrents, addTorrent, removeTorrent, pauseTorrent, resumeTorrent, selectFolder, openFolder, reverify, toggleFileSelection, pauseAll, resumeAll };
+    const openFile = useCallback(async (infoHash, filePath) => {
+        if (!window.ipcRenderer) return;
+        return await window.ipcRenderer.invoke('open-torrent-file', { infoHash, filePath });
+    }, []);
+
+    const openFileFolder = useCallback(async (infoHash, filePath) => {
+        if (!window.ipcRenderer) return;
+        return await window.ipcRenderer.invoke('open-torrent-file-folder', { infoHash, filePath });
+    }, []);
+
+    const showFileContextMenu = useCallback(async ({ infoHash, filePath, isFolder, isSelected, fileIndex }) => {
+        if (!window.ipcRenderer) return;
+        return await window.ipcRenderer.invoke('show-torrent-file-menu', { infoHash, filePath, isFolder, isSelected, fileIndex });
+    }, []);
+
+    const showTorrentContextMenu = useCallback(async (infoHash) => {
+        if (!window.ipcRenderer) return;
+        return await window.ipcRenderer.invoke('show-torrent-context-menu', infoHash);
+    }, []);
+
+    return {
+        torrents,
+        addTorrent,
+        removeTorrent,
+        pauseTorrent,
+        resumeTorrent,
+        selectFolder,
+        openFolder,
+        reverify,
+        toggleFileSelection,
+        pauseAll,
+        resumeAll,
+        openFile,
+        openFileFolder,
+        showFileContextMenu,
+        showTorrentContextMenu
+    };
 }

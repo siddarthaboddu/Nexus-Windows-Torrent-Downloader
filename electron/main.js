@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, powerSaveBlocker, Notification } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage, powerSaveBlocker, Notification, clipboard } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -288,11 +288,10 @@ function setupIpcHandlers() {
     })
   })
 
-  ipcMain.handle('open-torrent-folder', async (event, infoHash) => {
+  function openTorrentFolderInternal(infoHash) {
     let torrentPath = null;
     let torrentName = null;
 
-    // Try to get from active WebTorrent instance first
     if (client) {
       const active = client.get(infoHash);
       if (active) {
@@ -301,7 +300,6 @@ function setupIpcHandlers() {
       }
     }
 
-    // Fallback to managedTorrents if not found or client not ready
     if (!torrentPath) {
       const managed = managedTorrents.find(t => t.infoHash === infoHash);
       if (managed) {
@@ -311,18 +309,296 @@ function setupIpcHandlers() {
     }
 
     if (torrentPath) {
-      // Construct possible folder path (if it's a folder-based torrent)
       const possiblePath = torrentName ? path.join(torrentPath, torrentName) : torrentPath;
-
       try {
-        // Check if the specific torrent folder/file exists
-        await fs.access(possiblePath);
-        shell.showItemInFolder(possiblePath); // Highlights the item
+        if (fsSync.existsSync(possiblePath)) {
+          shell.showItemInFolder(possiblePath);
+        } else {
+          shell.openPath(torrentPath);
+        }
       } catch {
-        // Fallback to opening the download directory
         shell.openPath(torrentPath);
       }
     }
+  }
+
+  function resolveTorrentPath(infoHash, relativePath = '') {
+    let torrentPath = null;
+    let torrentName = null;
+
+    const hashLower = (infoHash || '').toLowerCase();
+
+    if (client) {
+      const active = client.torrents?.find(t => (t.infoHash || '').toLowerCase() === hashLower) || client.get(infoHash);
+      if (active) {
+        torrentPath = active.path;
+        torrentName = active.name;
+      }
+    }
+
+    if (!torrentPath) {
+      const managed = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === hashLower || t.infoHash === infoHash);
+      if (managed) {
+        torrentPath = managed.path;
+        torrentName = managed.name;
+      }
+    }
+
+    if (!torrentPath) {
+      torrentPath = appConfig.downloadPath || path.join(os.homedir(), 'Downloads', 'Nexus');
+    }
+
+    // Normalize separators
+    const cleanRelative = (relativePath || '').replace(/[/\\]+/g, path.sep).replace(/^[\\/]+/, '');
+
+    if (!cleanRelative) {
+      const candidate = torrentName ? path.join(torrentPath, torrentName) : torrentPath;
+      const exists = fsSync.existsSync(candidate);
+      let isDirectory = true;
+      if (exists) {
+        try { isDirectory = fsSync.statSync(candidate).isDirectory(); } catch { }
+      }
+      return { targetPath: candidate, torrentPath, exists, isDirectory };
+    }
+
+    // Test candidate paths in priority order
+    const candidates = [
+      path.join(torrentPath, cleanRelative),
+      torrentName ? path.join(torrentPath, torrentName, cleanRelative) : null,
+      torrentName && cleanRelative.toLowerCase().startsWith(torrentName.toLowerCase())
+        ? path.join(torrentPath, cleanRelative.slice(torrentName.length).replace(/^[\\/]+/, ''))
+        : null
+    ].filter(Boolean);
+
+    for (const cand of candidates) {
+      if (fsSync.existsSync(cand)) {
+        let isDir = false;
+        try { isDir = fsSync.statSync(cand).isDirectory(); } catch { }
+        return { targetPath: cand, torrentPath, exists: true, isDirectory: isDir };
+      }
+    }
+
+    // If none exist yet, choose best target path
+    const fallback = (torrentName && !cleanRelative.toLowerCase().startsWith(torrentName.toLowerCase()))
+      ? path.join(torrentPath, torrentName, cleanRelative)
+      : path.join(torrentPath, cleanRelative);
+
+    return { targetPath: fallback, torrentPath, exists: false, isDirectory: false };
+  }
+
+  ipcMain.handle('get-torrent-file-path', async (event, { infoHash, filePath }) => {
+    const resolved = resolveTorrentPath(infoHash, filePath);
+    return resolved ? resolved.targetPath : null;
+  })
+
+  ipcMain.handle('open-torrent-folder', async (event, infoHash) => {
+    openTorrentFolderInternal(infoHash);
+  })
+
+  ipcMain.handle('open-torrent-file', async (event, { infoHash, filePath }) => {
+    const resolved = resolveTorrentPath(infoHash, filePath);
+    if (!resolved) {
+      return { success: false, error: 'Torrent download path not found' };
+    }
+    const { targetPath, exists, torrentPath } = resolved;
+    try {
+      if (exists) {
+        const openErr = await shell.openPath(targetPath);
+        if (openErr) {
+          console.warn('Failed to open file with shell.openPath:', openErr);
+          shell.showItemInFolder(targetPath);
+          return { success: false, error: openErr };
+        }
+        return { success: true };
+      } else {
+        // If file not yet on disk, open containing folder instead
+        let dir = path.dirname(targetPath);
+        while (!fsSync.existsSync(dir) && dir !== torrentPath && path.dirname(dir) !== dir) {
+          dir = path.dirname(dir);
+        }
+        shell.openPath(fsSync.existsSync(dir) ? dir : torrentPath);
+        return { success: true, warning: 'File not fully downloaded yet. Opened folder instead.' };
+      }
+    } catch (e) {
+      console.error('Error opening file:', e);
+      return { success: false, error: e.message };
+    }
+  })
+
+  ipcMain.handle('open-torrent-file-folder', async (event, { infoHash, filePath }) => {
+    const resolved = resolveTorrentPath(infoHash, filePath);
+    if (!resolved) {
+      return { success: false, error: 'Torrent download path not found' };
+    }
+    const { targetPath, torrentPath, exists } = resolved;
+    try {
+      if (exists) {
+        shell.showItemInFolder(targetPath);
+      } else {
+        let dir = path.dirname(targetPath);
+        while (!fsSync.existsSync(dir) && dir !== torrentPath && path.dirname(dir) !== dir) {
+          dir = path.dirname(dir);
+        }
+        if (fsSync.existsSync(dir)) {
+          shell.openPath(dir);
+        } else {
+          shell.openPath(torrentPath);
+        }
+      }
+      return { success: true };
+    } catch (e) {
+      console.error('Error opening file folder:', e);
+      return { success: false, error: e.message };
+    }
+  })
+
+  ipcMain.handle('show-torrent-file-menu', async (event, { infoHash, filePath, isFolder, isSelected, fileIndex }) => {
+    const resolved = resolveTorrentPath(infoHash, filePath);
+    if (!resolved) return;
+    const { targetPath, torrentPath, exists } = resolved;
+
+    const template = [];
+
+    if (!isFolder) {
+      template.push({
+        label: exists ? 'Open' : 'Open (Not downloaded yet)',
+        enabled: exists,
+        click: async () => {
+          try {
+            if (fsSync.existsSync(targetPath)) {
+              await shell.openPath(targetPath);
+            }
+          } catch (err) {
+            console.error('Failed to open file:', err);
+          }
+        }
+      });
+
+      template.push({
+        label: 'Open Containing Folder',
+        click: () => {
+          try {
+            if (fsSync.existsSync(targetPath)) {
+              shell.showItemInFolder(targetPath);
+            } else {
+              let dir = path.dirname(targetPath);
+              while (!fsSync.existsSync(dir) && dir !== torrentPath && path.dirname(dir) !== dir) {
+                dir = path.dirname(dir);
+              }
+              shell.openPath(fsSync.existsSync(dir) ? dir : torrentPath);
+            }
+          } catch (err) {
+            console.error('Failed to open containing folder:', err);
+          }
+        }
+      });
+    } else {
+      template.push({
+        label: 'Open Folder',
+        click: () => {
+          try {
+            if (fsSync.existsSync(targetPath)) {
+              shell.openPath(targetPath);
+            } else {
+              shell.openPath(torrentPath);
+            }
+          } catch (err) {
+            console.error('Failed to open folder:', err);
+          }
+        }
+      });
+
+      template.push({
+        label: 'Show in Explorer',
+        click: () => {
+          try {
+            if (fsSync.existsSync(targetPath)) {
+              shell.showItemInFolder(targetPath);
+            } else {
+              shell.openPath(torrentPath);
+            }
+          } catch (err) {
+            console.error('Failed to show folder in explorer:', err);
+          }
+        }
+      });
+    }
+
+    template.push({ type: 'separator' });
+
+    template.push({
+      label: isFolder ? 'Copy Folder Path' : 'Copy File Path',
+      click: () => {
+        try {
+          clipboard.writeText(targetPath);
+        } catch (err) {
+          console.error('Failed to copy path to clipboard:', err);
+        }
+      }
+    });
+
+    if (!isFolder && typeof fileIndex === 'number') {
+      template.push({ type: 'separator' });
+      template.push({
+        label: isSelected !== false ? 'Exclude from Download' : 'Include in Download',
+        click: () => {
+          applyToggleFileSelection(infoHash, [fileIndex], isSelected === false);
+        }
+      });
+    }
+
+    const winSender = BrowserWindow.fromWebContents(event.sender);
+    const menu = Menu.buildFromTemplate(template);
+    menu.popup({ window: winSender });
+  })
+
+  ipcMain.handle('show-torrent-context-menu', async (event, infoHash) => {
+    const t = managedTorrents.find(m => m.infoHash === infoHash);
+    const active = client ? client.get(infoHash) : null;
+    const isPaused = t ? t.paused : !active;
+
+    const template = [
+      {
+        label: 'Open Folder',
+        click: () => {
+          openTorrentFolderInternal(infoHash);
+        }
+      },
+      {
+        label: isPaused ? 'Resume Torrent' : 'Pause Torrent',
+        click: () => {
+          const winSender = BrowserWindow.fromWebContents(event.sender);
+          winSender?.webContents.send('context-menu-toggle-pause', infoHash);
+        }
+      },
+      {
+        label: 'Copy Magnet Link',
+        enabled: !!(t?.magnetURI || active?.magnetURI),
+        click: () => {
+          const uri = t?.magnetURI || active?.magnetURI;
+          if (uri) clipboard.writeText(uri);
+        }
+      },
+      {
+        label: 'Force Re-check',
+        click: () => {
+          const winSender = BrowserWindow.fromWebContents(event.sender);
+          winSender?.webContents.send('context-menu-reverify', infoHash);
+        }
+      },
+      { type: 'separator' },
+      {
+        label: 'Delete Torrent...',
+        click: () => {
+          const winSender = BrowserWindow.fromWebContents(event.sender);
+          winSender?.webContents.send('context-menu-delete-torrent', infoHash);
+        }
+      }
+    ];
+
+    const winSender = BrowserWindow.fromWebContents(event.sender);
+    const menu = Menu.buildFromTemplate(template);
+    menu.popup({ window: winSender });
   })
 
   ipcMain.handle('get-download-path', async () => {
@@ -615,7 +891,7 @@ function setupIpcHandlers() {
     }
   })
 
-  ipcMain.handle('toggle-file-selection', async (event, infoHash, fileIndexOrIndices, selected) => {
+  function applyToggleFileSelection(infoHash, fileIndexOrIndices, selected) {
     const indices = Array.isArray(fileIndexOrIndices) ? fileIndexOrIndices : [fileIndexOrIndices]
     const managed = managedTorrents.find(t => t.infoHash === infoHash)
     if (managed) {
@@ -654,6 +930,10 @@ function setupIpcHandlers() {
 
     saveTorrentsState()
     return true
+  }
+
+  ipcMain.handle('toggle-file-selection', async (event, infoHash, fileIndexOrIndices, selected) => {
+    return applyToggleFileSelection(infoHash, fileIndexOrIndices, selected)
   })
 
   ipcMain.handle('play-sound', () => {

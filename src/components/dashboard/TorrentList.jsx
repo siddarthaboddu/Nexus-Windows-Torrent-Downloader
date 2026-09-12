@@ -14,7 +14,19 @@ const ProgressBar = ({ progress }) => (
     </div>
 );
 
-const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder, compactMode, onToggleFile }) => {
+const TorrentCard = ({
+    torrent,
+    onRemove,
+    onTogglePause,
+    onReverify,
+    openFolder,
+    compactMode,
+    onToggleFile,
+    openFile,
+    openFileFolder,
+    showFileContextMenu,
+    showTorrentContextMenu
+}) => {
     const [expanded, setExpanded] = useState(false);
     const [copied, setCopied] = useState(false);
 
@@ -27,10 +39,25 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder,
         }
     };
 
+    const handleContextMenu = (e) => {
+        if (e.target.closest('.custom-scrollbar') || e.target.closest('button') || e.target.closest('input')) {
+            return;
+        }
+        e.preventDefault();
+        if (showTorrentContextMenu) {
+            showTorrentContextMenu(torrent.infoHash);
+        } else if (window.ipcRenderer) {
+            window.ipcRenderer.invoke('show-torrent-context-menu', torrent.infoHash);
+        }
+    };
+
     return (
-        <div className={clsx("glass-panel rounded-xl mb-3 hover:bg-secondary/40 transition-all group",
-            compactMode ? "p-2" : "p-4"
-        )}>
+        <div
+            className={clsx("glass-panel rounded-xl mb-3 hover:bg-secondary/40 transition-all group",
+                compactMode ? "p-2" : "p-4"
+            )}
+            onContextMenu={handleContextMenu}
+        >
             <div
                 className="flex justify-between items-start mb-2 cursor-pointer"
                 onClick={() => setExpanded(!expanded)}
@@ -128,7 +155,15 @@ const TorrentCard = ({ torrent, onRemove, onTogglePause, onReverify, openFolder,
 
             <ProgressBar progress={torrent.progress || 0} />
 
-            {expanded && <TorrentDetails torrent={torrent} onToggleFile={(fileIndices, selected) => onToggleFile && onToggleFile(torrent.infoHash, fileIndices, selected)} />}
+            {expanded && (
+                <TorrentDetails
+                    torrent={torrent}
+                    onToggleFile={(fileIndices, selected) => onToggleFile && onToggleFile(torrent.infoHash, fileIndices, selected)}
+                    onOpenFile={openFile}
+                    onOpenFileFolder={openFileFolder}
+                    onContextMenu={showFileContextMenu}
+                />
+            )}
         </div>
     )
 }
@@ -155,7 +190,22 @@ function formatTime(seconds) {
     return `${s}s`;
 }
 
-const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFolder, compactMode, onToggleFile, onPauseAll, onResumeAll }) => {
+const TorrentList = ({
+    torrents,
+    onRemove,
+    onPause,
+    onResume,
+    onReverify,
+    openFolder,
+    compactMode,
+    onToggleFile,
+    onPauseAll,
+    onResumeAll,
+    openFile,
+    openFileFolder,
+    showFileContextMenu,
+    showTorrentContextMenu
+}) => {
     const [searchQuery, setSearchQuery] = useState('');
 
     if (torrents.length === 0) {
@@ -260,6 +310,10 @@ const TorrentList = ({ torrents, onRemove, onPause, onResume, onReverify, openFo
                                             onReverify={onReverify}
                                             compactMode={compactMode}
                                             onToggleFile={onToggleFile}
+                                            openFile={openFile}
+                                            openFileFolder={openFileFolder}
+                                            showFileContextMenu={showFileContextMenu}
+                                            showTorrentContextMenu={showTorrentContextMenu}
                                         />
                                     ))}
                                 </div>
