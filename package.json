@@ -9,13 +9,17 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "dist": "vite build && electron-builder"
+    "prepare:native": "node scripts/ensure-node-datachannel.mjs",
+    "dist": "npm run prepare:native && vite build && electron-builder"
   },
   "build": {
     "appId": "com.nexus.torrent",
     "productName": "Nexus Torrent",
     "icon": "build/icon.ico",
     "npmRebuild": false,
+    "asarUnpack": [
+      "node_modules/node-datachannel/build/Release/*.node"
+    ],
     "directories": {
       "output": "release"
     },

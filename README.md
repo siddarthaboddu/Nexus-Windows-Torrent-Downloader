@@ -47,6 +47,10 @@ A modern, beautiful, and feature-rich torrent client built with Electron, React,
 - **Custom Titlebar**: Frameless window with custom controls for a native feel
 
 ### Advanced Features
+- **Live Video Streaming**: Stream a selected video from a magnet link or `.torrent` without adding it to the persistent download queue
+- **Range-Request Media Server**: Supports seeking through an ephemeral localhost HTTP stream and cleans its temporary cache when stopped
+- **Stream Telemetry**: Shows connected peers, transfer speed, progress, and buffer health while playback is active
+- **External Player Fallback**: Open the active localhost stream in a system video player when Chromium cannot decode the file
 - **System Tray Integration**: Minimize to tray and quick access from taskbar
 - **Speed Limiting**: Configure download and upload speed limits
 - **Network Configuration**: Customize torrent port settings
@@ -239,9 +243,10 @@ npm run dist
 ```
 
 This command:
-1. Runs the production build
-2. Packages the app using Electron Builder
-3. Creates an NSIS installer in `release/{version}/`
+1. Verifies the `node-datachannel` native binary required by WebTorrent streaming
+2. Runs the production build
+3. Packages the app using Electron Builder
+4. Creates an NSIS installer in `release/`
 
 **Output Files:**
 - `Nexus Torrent Setup {version}.exe` - Windows installer
@@ -278,6 +283,15 @@ This command:
 - **Remove**: Click the trash icon to remove torrent (with option to delete files)
 - **Open Folder**: Click the folder icon to open download location
 - **Re-verify**: Right-click torrent and select "Verify" to check file integrity
+
+### Streaming Video
+
+1. Select **Stream Video** from the sidebar.
+2. Paste a magnet link or drop a `.torrent` file.
+3. Select a video file once its metadata loads.
+4. Use **Stop & Clean Up** when finished to close the stream and delete its temporary cache.
+
+Streaming uses a separate, ephemeral WebTorrent client. It does not add the torrent to the persistent downloads list unless you explicitly choose to save it.
 
 ### Monitoring Progress
 
@@ -384,6 +398,8 @@ nexus/
 - **`electron/main.js`**: Electron main process, handles IPC, WebTorrent client, system tray
 - **`src/App.jsx`**: Main React component with routing and state management
 - **`src/hooks/useTorrents.js`**: Custom hook for torrent operations
+- **`electron/utils/StreamManager.js`**: Isolated WebTorrent streaming lifecycle, HTTP range server, and cache cleanup
+- **`src/hooks/useTorrentStream.js`**: Stream metadata, playback, telemetry, and teardown state
 - **`package.json`**: Dependencies and build configuration
 - **`vite.config.js`**: Vite bundler configuration
 - **`tailwind.config.js`**: TailwindCSS theme customization
@@ -396,6 +412,7 @@ nexus/
 |---------|-------------|
 | `npm run dev` | Start development server with hot reload |
 | `npm run build` | Build production bundle |
+| `npm run prepare:native` | Verify or download the node-datachannel native binary |
 | `npm run dist` | Create Windows installer |
 | `npm run lint` | Run ESLint code linting |
 | `npm run preview` | Preview production build |

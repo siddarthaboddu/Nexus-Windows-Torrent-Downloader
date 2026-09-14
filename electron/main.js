@@ -4,6 +4,7 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
+import { StreamManager } from './utils/StreamManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -13,6 +14,7 @@ process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(__dirnam
 let win
 let client
 let tray
+let streamManager = null
 let isQuitting = false
 let appConfig = {} // Cache config in memory for sync access
 let isRestarting = false // Guard against concurrent restarts
@@ -1039,6 +1041,70 @@ function setupIpcHandlers() {
     saveTorrentsState()
     return true
   })
+
+  // --- Live Video Streaming Feature Handlers ---
+  ipcMain.handle('stream-parse-torrent', async (event, source) => {
+    if (!streamManager) streamManager = new StreamManager(() => client)
+    return await streamManager.parseTorrent(source)
+  })
+
+  ipcMain.handle('stream-start', async (event, { infoHash, fileIndex }) => {
+    if (!streamManager) streamManager = new StreamManager(() => client)
+    return await streamManager.startStreaming(infoHash, fileIndex)
+  })
+
+  ipcMain.handle('stream-stop', async () => {
+    if (streamManager) {
+      return await streamManager.stopStreaming()
+    }
+    return { success: true }
+  })
+
+  ipcMain.handle('stream-get-status', () => {
+    if (streamManager) {
+      return streamManager.getStatus()
+    }
+    return { active: false }
+  })
+
+  ipcMain.handle('stream-open-external', async (event, url) => {
+    if (url) {
+      await shell.openExternal(url)
+      return { success: true }
+    }
+    return { success: false }
+  })
+
+  ipcMain.handle('stream-promote-to-download', async (event, { destinationPath }) => {
+    if (!streamManager) throw new Error('Stream manager not initialized')
+    const info = await streamManager.promoteToDownload(destinationPath)
+    if (!client) await initWebTorrent()
+
+    return new Promise((resolve, _reject) => {
+      client.add(info.magnetURI, { path: destinationPath }, (torrent) => {
+        const normHash = (torrent.infoHash || '').toLowerCase()
+        const exists = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === normHash)
+        if (!exists) {
+          managedTorrents.push({
+            infoHash: normHash,
+            magnetURI: torrent.magnetURI,
+            path: destinationPath,
+            paused: false,
+            name: torrent.name,
+            deselectedFiles: [],
+            baseUploaded: 0,
+            baseDownloaded: 0,
+            totalUploaded: 0,
+            totalDownloaded: 0,
+            ratio: 0
+          })
+          saveTorrentsState()
+        }
+        setupTorrentEventListeners(torrent)
+        resolve({ success: true, infoHash: normHash })
+      })
+    })
+  })
 }
 
 function findIncomingTorrent(args) {
@@ -1196,6 +1262,16 @@ app.on('before-quit', () => {
     }
   }
   client = null
+
+  if (streamManager) {
+    try {
+      streamManager.stopStreaming()
+      streamManager.cleanTempCache()
+    } catch (e) {
+      console.warn('[Shutdown] streamManager cleanup exception:', e)
+    }
+    streamManager = null
+  }
 })
 
 app.on('window-all-closed', () => {
@@ -1275,6 +1351,14 @@ app.whenReady().then(async () => {
 
   setupIpcHandlers()
   createWindow()
+
+  // Clean leftover temp streaming cache from previous sessions
+  try {
+    if (!streamManager) streamManager = new StreamManager(() => client)
+    streamManager.cleanTempCache()
+  } catch (e) {
+    console.warn('[Startup] Failed to clean stream temp cache:', e)
+  }
 
   try {
     await initWebTorrent()

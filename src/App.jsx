@@ -4,6 +4,7 @@ import TorrentList from './components/dashboard/TorrentList'
 import Settings from './components/dashboard/Settings'
 import AddTorrentModal from './components/modals/AddTorrentModal'
 import DeleteTorrentModal from './components/modals/DeleteTorrentModal'
+import StreamView from './components/streaming/StreamView'
 import { useTorrents } from './hooks/useTorrents'
 import { Plus } from 'lucide-react'
 
@@ -217,7 +218,8 @@ function App() {
             <h2 className="text-3xl font-bold text-foreground tracking-tight">
               {activeTab === 'dashboard' ? 'Overview' :
                 activeTab === 'transfers' ? 'Active Transfers' :
-                  'Settings'}
+                  activeTab === 'stream' ? 'Stream Video' :
+                    'Settings'}
             </h2>
 
             <button
@@ -307,6 +309,10 @@ function App() {
               />
             </div>
           )}
+
+          <div className={activeTab === 'stream' ? 'block animate-in slide-in-from-bottom-5 duration-500' : 'hidden'}>
+            <StreamView activeTorrents={torrents} />
+          </div>
 
           {activeTab === 'settings' && (
             <Settings />

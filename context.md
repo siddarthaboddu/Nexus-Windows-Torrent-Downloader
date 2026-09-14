@@ -77,7 +77,9 @@ Nexus-Windows-Torrent-Downloader/
 │   └── icon.ico                     # Windows executable and window icon
 ├── electron/
 │   ├── main.js                      # Core Electron main process: WebTorrent engine, IPC handlers, tray, session
-│   └── preload.js                   # contextBridge security bridge exposing window.ipcRenderer
+│   ├── preload.js                   # contextBridge security bridge exposing window.ipcRenderer
+│   └── utils/
+│       └── StreamManager.js         # Ephemeral streaming engine, Range 206 HTTP server, temp cache manager
 ├── public/
 │   └── tray.png                     # System tray icon
 ├── release/                         # Output folder for electron-builder NSIS installers
@@ -92,17 +94,26 @@ Nexus-Windows-Torrent-Downloader/
 │   │   ├── layout/
 │   │   │   ├── Layout.jsx           # Frameless window layout and Windows top drag region
 │   │   │   └── Sidebar.jsx          # Sidebar navigation with live global DL/UL throughput badges
-│   │   └── modals/
-│   │       ├── AddTorrentModal.jsx  # Modal for adding magnet links or .torrent files + destination folder
-│   │       └── DeleteTorrentModal.jsx # Confirmation modal with toggle to delete files from disk
+│   │   ├── modals/
+│   │   │   ├── AddTorrentModal.jsx  # Modal for adding magnet links or .torrent files + destination folder
+│   │   │   └── DeleteTorrentModal.jsx # Confirmation modal with toggle to delete files from disk
+│   │   └── streaming/
+│   │       ├── StreamFilePicker.jsx  # Media file inspection & selection
+│   │       ├── StreamCinemaPlayer.jsx # In-app cinema player with custom HUD & keyboard shortcuts
+│   │       ├── StreamFilePicker.jsx # Filterable video list with badges
+│   │       ├── StreamTelemetryBar.jsx # Real-time bandwidth, peer count, buffer progress
+│   │       ├── StreamView.jsx       # Coordinator for streaming tabs & lifecycle
+│   │       └── TorrentSourceInput.jsx # Magnet input and .torrent drag & drop target
 │   ├── contexts/
 │   │   └── ThemeProvider.jsx        # Dark/Light/System theme context
 │   ├── hooks/
-│   │   └── useTorrents.js           # Custom hook wrapping torrent IPC calls & periodic state updates
+│   │   ├── useTorrents.js           # Custom hook wrapping torrent IPC calls & periodic state updates
+│   │   └── useTorrentStream.js      # Custom hook managing streaming lifecycle & telemetry
 │   ├── App.css
 │   ├── App.jsx                      # Root container: tab routing, magnet URI listener, stats aggregator
 │   ├── index.css                    # Tailwind imports, custom glassmorphism styles, scrollbars
 │   └── main.jsx                     # Vite React bootstrap entry
+├── TORRENT_STREAMING_FEATURE.md     # Full specification for dual-mode live torrent streaming
 ├── .gitignore
 ├── eslint.config.js
 ├── index.html                       # Base HTML entry point
@@ -173,6 +184,12 @@ Nexus-Windows-Torrent-Downloader/
 | `set-config` | Renderer → Main (Invoke) | `Partial<Config>` | Updates and persists application configuration |
 | `get-random-port` | Renderer → Main (Invoke) | None | Generates random port between 1024 and 65535 |
 | `test-notification`| Renderer → Main (Invoke) | None | Triggers a sample native notification |
+| `stream-parse-torrent` | Renderer → Main (Invoke) | `source: string \| Uint8Array` | Inspects torrent metadata and extracts video file list |
+| `stream-start` | Renderer → Main (Invoke) | `{ infoHash: string, fileIndex: number }` | Spawns local HTTP Range 206 server and starts streaming file |
+| `stream-stop` | Renderer → Main (Invoke) | None | Shuts down streaming server and purges temporary chunk cache |
+| `stream-get-status` | Renderer → Main (Invoke) | None | Retrieves real-time streaming bandwidth, peers, and buffer progress |
+| `stream-open-external` | Renderer → Main (Invoke) | `url: string` | Opens streaming URL in external player (e.g., VLC) |
+| `stream-promote-to-download` | Renderer → Main (Invoke) | `{ destinationPath: string }` | Converts live stream torrent into permanent background download |
 
 ---
 
