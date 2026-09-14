@@ -8,6 +8,115 @@ const VIDEO_EXTENSIONS = new Set([
   'mp4', 'm4v', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'ogv', '3gp'
 ])
 
+const SUBTITLE_EXTENSIONS = new Set(['srt', 'vtt', 'ass', 'ssa'])
+
+const SUBTITLE_LANG_LABELS = {
+  en: 'English', eng: 'English',
+  es: 'Spanish', spa: 'Spanish',
+  fr: 'French', fre: 'French', fra: 'French',
+  de: 'German', ger: 'German', deu: 'German',
+  hi: 'Hindi', hin: 'Hindi',
+  te: 'Telugu', tel: 'Telugu',
+  ta: 'Tamil', tam: 'Tamil',
+  ml: 'Malayalam', mal: 'Malayalam',
+  kn: 'Kannada', kan: 'Kannada',
+  pt: 'Portuguese', por: 'Portuguese',
+  it: 'Italian', ita: 'Italian',
+  nl: 'Dutch', dut: 'Dutch', nld: 'Dutch',
+  ru: 'Russian', rus: 'Russian',
+  ja: 'Japanese', jpn: 'Japanese',
+  ko: 'Korean', kor: 'Korean',
+  zh: 'Chinese', chi: 'Chinese', zho: 'Chinese',
+  ar: 'Arabic', ara: 'Arabic'
+}
+
+function detectSubtitleLang(fileName) {
+  const base = (fileName || '').toLowerCase()
+  // Matches ".en.", "_en_", "-en-", "[en]", "(en)", ".eng.", etc.
+  const m = base.match(/[.\-_ \[\(\]]+([a-z]{2,3})(?=[.\-_ \[\]\)])/i)
+  if (m) {
+    const code = m[1].toLowerCase()
+    if (SUBTITLE_LANG_LABELS[code]) {
+      return { code, label: SUBTITLE_LANG_LABELS[code] }
+    }
+    return { code, label: code.toUpperCase() }
+  }
+  return { code: 'und', label: 'Unknown' }
+}
+
+function srtToVtt(text) {
+  let normalized = (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/^\uFEFF/, '')
+  // Already WebVTT? Still normalize comma timestamps just in case.
+  normalized = normalized.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
+  if (/^WEBVTT/m.test(normalized)) return normalized
+  // Strip numeric-only cue identifiers that SRT uses ("1\n00:00:01,000 --> ...")
+  // is valid VTT too, so just prepend the header.
+  return `WEBVTT\n\n${normalized.trim()}\n`
+}
+
+function assTimeToVtt(t) {
+  // ASS: H:MM:SS.cc -> HH:MM:SS.mmm
+  const m = String(t || '').trim().match(/^(-?\d+):(\d{2}):(\d{2})[.:](\d{2,3})$/)
+  if (!m) return null
+  const h = String(m[1]).padStart(2, '0')
+  let ms = m[4]
+  if (ms.length === 2) ms = `${ms}0`
+  return `${h}:${m[2]}:${m[3]}.${ms}`
+}
+
+function assToVtt(text) {
+  const normalized = (text || '').replace(/\r\n/g, '\n').replace(/^\uFEFF/, '')
+  const lines = normalized.split('\n')
+  const cues = []
+  for (const line of lines) {
+    if (!line.startsWith('Dialogue:')) continue
+    // Dialogue: Layer, Start, End, Style, Name, ML, MR, MV, Effect, Text...
+    // Split into max 10 parts so commas inside Text survive.
+    const body = line.slice('Dialogue:'.length).trim()
+    const parts = body.split(',')
+    if (parts.length < 10) continue
+    const start = assTimeToVtt(parts[1])
+    const end = assTimeToVtt(parts[2])
+    if (!start || !end) continue
+    const rawText = parts.slice(9).join(',')
+    const clean = rawText
+      .replace(/\{[^}]*\}/g, '') // ASS override tags
+      .replace(/\\N/gi, '\n') // hard line break
+      .replace(/\\n/gi, '\n')
+      .replace(/\\h/g, ' ')
+      .trim()
+    if (!clean) continue
+    cues.push(`${start} --> ${end}\n${clean}`)
+  }
+  if (cues.length === 0) {
+    // Unparseable ASS: strip tags and serve as a single note cue rather than failing.
+    const stripped = normalized.replace(/\{[^}]*\}/g, '').trim().slice(0, 2000)
+    if (!stripped) return 'WEBVTT\n\n'
+    return `WEBVTT\n\n00:00:00.000 --> 00:00:05.000\n[Subtitle format not fully supported — open in VLC]\n`
+  }
+  return `WEBVTT\n\n${cues.join('\n\n')}\n`
+}
+
+function convertSubtitleToVtt(text, ext) {
+  if (ext === 'vtt') {
+    let normalized = (text || '').replace(/\r\n/g, '\n').replace(/^\uFEFF/, '')
+    if (/^WEBVTT/m.test(normalized)) return normalized
+    return srtToVtt(normalized)
+  }
+  if (ext === 'ass' || ext === 'ssa') return assToVtt(text)
+  return srtToVtt(text) // .srt default
+}
+
+async function readTorrentFileText(file) {
+  const stream = file.createReadStream()
+  const chunks = []
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  try { stream.destroy?.() } catch { }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 const MIME_TYPES = {
   mp4: 'video/mp4',
   m4v: 'video/mp4',
@@ -45,6 +154,11 @@ export class StreamManager {
   isVideoFile(fileName) {
     const ext = path.extname(fileName || '').toLowerCase().replace('.', '')
     return VIDEO_EXTENSIONS.has(ext)
+  }
+
+  isSubtitleFile(fileName) {
+    const ext = path.extname(fileName || '').toLowerCase().replace('.', '')
+    return SUBTITLE_EXTENSIONS.has(ext)
   }
 
   async ensureTempDir(infoHash = '') {
@@ -149,14 +263,22 @@ export class StreamManager {
   }
 
   formatTorrentMetadata(torrent) {
-    const files = (torrent.files || []).map((f, idx) => ({
-      index: idx,
-      name: f.name,
-      path: f.path,
-      length: f.length,
-      isVideo: this.isVideoFile(f.name),
-      extension: path.extname(f.name).toLowerCase().replace('.', '')
-    }))
+    const files = (torrent.files || []).map((f, idx) => {
+      const extension = path.extname(f.name).toLowerCase().replace('.', '')
+      const isSubtitle = SUBTITLE_EXTENSIONS.has(extension)
+      const lang = isSubtitle ? detectSubtitleLang(f.name) : null
+      return {
+        index: idx,
+        name: f.name,
+        path: f.path,
+        length: f.length,
+        isVideo: this.isVideoFile(f.name),
+        isSubtitle,
+        subtitleLang: lang?.code || null,
+        subtitleLabel: lang?.label || null,
+        extension
+      }
+    })
 
     return {
       infoHash: (torrent.infoHash || '').toLowerCase(),
@@ -223,11 +345,14 @@ export class StreamManager {
     this.activeFile = targetFile
 
     // 4. Prioritize piece downloading for the chosen file
-    // Deselect other files so bandwidth is 100% focused on current stream
+    // Keep tiny sidecar subtitle files selected so they download
+    // alongside the video; deselect everything else.
     torrent.files.forEach((f, idx) => {
-      if (idx !== selectedIndex) {
-        try { f.deselect() } catch { }
-      }
+      if (idx === selectedIndex) return
+      try {
+        if (this.isSubtitleFile(f.name)) f.select()
+        else f.deselect()
+      } catch { }
     })
 
     // Select the target file
@@ -240,10 +365,7 @@ export class StreamManager {
     // 5. Start HTTP Range 206 Streaming Server
     const mimeType = this.getMimeType(targetFile.name)
 
-    const server = http.createServer((req, res) => {
-      const range = req.headers.range
-      const fileSize = targetFile.length
-
+    const server = http.createServer(async (req, res) => {
       // Set CORS headers for Electron webview/fetch compatibility
       res.setHeader('Access-Control-Allow-Origin', '*')
       res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type')
@@ -253,6 +375,42 @@ export class StreamManager {
         res.end()
         return
       }
+
+      const reqUrl = (req.url || '/').split('?')[0]
+
+      // --- Sidecar subtitle route: /subtitles/:fileIndex -> converted WebVTT ---
+      if (reqUrl.startsWith('/subtitles/')) {
+        const subIndex = Number(reqUrl.slice('/subtitles/'.length))
+        const subFile = Number.isInteger(subIndex) ? torrent.files?.[subIndex] : null
+        if (!subFile || !this.isSubtitleFile(subFile.name)) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' })
+          res.end('Subtitle not found')
+          return
+        }
+        try { subFile.select() } catch { }
+        try {
+          const raw = await readTorrentFileText(subFile)
+          const ext = path.extname(subFile.name).toLowerCase().replace('.', '')
+          const vtt = convertSubtitleToVtt(raw, ext)
+          const body = Buffer.from(vtt, 'utf8')
+          res.writeHead(200, {
+            'Content-Type': 'text/vtt;charset=utf-8',
+            'Content-Length': body.length,
+            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+          })
+          res.end(body)
+        } catch (err) {
+          console.warn('[StreamManager] Subtitle serve error:', err)
+          if (!res.headersSent) res.writeHead(500)
+          res.end()
+        }
+        return
+      }
+
+      const range = req.headers.range
+      const fileSize = targetFile.length
 
       if (range) {
         // Parse Range header e.g. "bytes=0-1048576"
@@ -331,13 +489,29 @@ export class StreamManager {
       server.on('error', reject)
     })
 
+    const baseUrl = `http://127.0.0.1:${this.serverPort}`
+    const subtitles = (torrent.files || [])
+      .map((f, idx) => ({ f, idx }))
+      .filter(({ f }) => this.isSubtitleFile(f.name))
+      .map(({ f, idx }) => {
+        const lang = detectSubtitleLang(f.name)
+        return {
+          index: idx,
+          name: f.name,
+          lang: lang.code,
+          label: `${f.name.split(/[\\/]/).pop()} · ${lang.label}`,
+          url: `${baseUrl}/subtitles/${idx}`
+        }
+      })
+
     return {
-      streamUrl: `http://127.0.0.1:${this.serverPort}/stream`,
+      streamUrl: `${baseUrl}/stream`,
       fileName: targetFile.name,
       fileLength: targetFile.length,
       fileIndex: selectedIndex,
       infoHash: normHash,
       mimeType,
+      subtitles,
       isExternalPlayerFriendly: !['mp4', 'webm'].includes(path.extname(targetFile.name).toLowerCase().replace('.', ''))
     }
   }

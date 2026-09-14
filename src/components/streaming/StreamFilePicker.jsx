@@ -18,6 +18,7 @@ export default function StreamFilePicker({ torrentInfo, onSelectFile, onCancel }
 
   const allFiles = torrentInfo.files || []
   const videoFiles = allFiles.filter(f => f.isVideo)
+  const subtitleFiles = allFiles.filter(f => f.isSubtitle)
 
   const displayedFiles = (filterVideosOnly && videoFiles.length > 0 ? videoFiles : allFiles).filter(f =>
     f.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -67,6 +68,12 @@ export default function StreamFilePicker({ torrentInfo, onSelectFile, onCancel }
                 <FileVideo size={14} />
                 {videoFiles.length} {videoFiles.length === 1 ? 'Video' : 'Videos'} ({allFiles.length} files total)
               </span>
+              {subtitleFiles.length > 0 && (
+                <span className="flex items-center gap-1 text-emerald-400">
+                  <FileText size={14} />
+                  {subtitleFiles.length} {subtitleFiles.length === 1 ? 'Subtitle' : 'Subtitles'}
+                </span>
+              )}
               <span className="flex items-center gap-1">
                 <Users size={14} />
                 {torrentInfo.numPeers} Peers

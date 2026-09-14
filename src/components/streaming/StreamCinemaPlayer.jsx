@@ -12,9 +12,21 @@ import {
   Loader2,
   ListVideo,
   ExternalLink,
-  AlertCircle
+  AlertCircle,
+  Captions,
+  CaptionsOff,
+  Upload,
+  Check
 } from 'lucide-react'
 import clsx from 'clsx'
+
+// Client-side SRT -> WebVTT (Chromium <track> only understands WebVTT)
+const convertSrtToVtt = (text) => {
+  let normalized = (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/^\uFEFF/, '')
+  normalized = normalized.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')
+  if (/^WEBVTT/m.test(normalized)) return normalized
+  return `WEBVTT\n\n${normalized.trim()}\n`
+}
 
 const formatTime = (seconds) => {
   if (isNaN(seconds) || seconds < 0) return '00:00'
@@ -51,6 +63,10 @@ export default function StreamCinemaPlayer({
   const [showRateMenu, setShowRateMenu] = useState(false)
   const [showFileDrawer, setShowFileDrawer] = useState(false)
   const [playbackError, setPlaybackError] = useState(null)
+  const [showSubtitleMenu, setShowSubtitleMenu] = useState(false)
+  const [uploadedSubs, setUploadedSubs] = useState([]) // { id, label, url }
+  const [activeSubtitle, setActiveSubtitle] = useState('off') // 'off' | subtitle url | uploaded id
+  const subtitleInputRef = useRef(null)
 
   // Auto-hide controls after user inactivity
   const handleUserActivity = useCallback(() => {
@@ -62,6 +78,7 @@ export default function StreamCinemaPlayer({
       controlsTimeoutRef.current = setTimeout(() => {
         setShowControls(false)
         setShowRateMenu(false)
+        setShowSubtitleMenu(false)
       }, 2500)
     }
   }, [isPlaying])
@@ -77,6 +94,7 @@ export default function StreamCinemaPlayer({
     controlsTimeoutRef.current = setTimeout(() => {
       setShowControls(false)
       setShowRateMenu(false)
+      setShowSubtitleMenu(false)
     }, 2500)
 
     return () => {
@@ -198,18 +216,27 @@ export default function StreamCinemaPlayer({
   }
 
   // Ref wrapper for keyboard controls to avoid reattaching global event listener
+  const toggleCaptions = () => {
+    setActiveSubtitle((prev) => {
+      if (prev !== 'off') return 'off'
+      const first = (streamData?.subtitles || [])[0]?.url || uploadedSubs[0]?.id
+      return first || 'off'
+    })
+  }
   const handlersRef = useRef({
     togglePlay,
     skipSeconds,
     toggleMute,
-    toggleFullscreen
+    toggleFullscreen,
+    toggleCaptions
   })
   useEffect(() => {
     handlersRef.current = {
       togglePlay,
       skipSeconds,
       toggleMute,
-      toggleFullscreen
+      toggleFullscreen,
+      toggleCaptions
     }
   })
 
@@ -258,12 +285,77 @@ export default function StreamCinemaPlayer({
           e.preventDefault()
           handlersRef.current.toggleMute()
           break
+        case 'c':
+          e.preventDefault()
+          handlersRef.current.toggleCaptions()
+          break
       }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
+
+  // ---- Subtitles (sidecar .srt/.vtt/.ass from torrent + manual upload) ----
+  // Note: embedded MKV/MP4 subtitle tracks are ignored by Chromium and
+  // remain a VLC-only path via "Open in VLC".
+  const torrentSubs = streamData?.subtitles || []
+  const allSubtitleTracks = [
+    ...torrentSubs.map((s) => ({ id: s.url, label: s.label, lang: s.lang, url: s.url, kind: 'torrent' })),
+    ...uploadedSubs
+  ]
+
+  // Default to first torrent subtitle when a new stream starts.
+  // Uploaded subs are kept across file switches; blob URLs are revoked on unmount.
+  const uploadedSubsRef = useRef([])
+  uploadedSubsRef.current = uploadedSubs
+  useEffect(() => {
+    setActiveSubtitle(torrentSubs.length > 0 ? torrentSubs[0].url : 'off')
+    setShowSubtitleMenu(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamData?.streamUrl])
+
+  useEffect(() => {
+    return () => {
+      uploadedSubsRef.current.forEach((t) => { try { URL.revokeObjectURL(t.url) } catch { } })
+    }
+  }, [])
+
+  // Apply selection to the underlying TextTrackList (<track default> alone
+  // does not switch after load)
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !video.textTracks) return
+    for (let i = 0; i < video.textTracks.length; i++) {
+      const track = video.textTracks[i]
+      const trackEl = video.querySelectorAll('track')[i]
+      const trackId = trackEl?.getAttribute('data-track-id')
+      track.mode = activeSubtitle !== 'off' && trackId === activeSubtitle ? 'showing' : 'disabled'
+    }
+  }, [activeSubtitle, allSubtitleTracks.length, streamData?.streamUrl])
+
+  const handleSubtitleUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    try {
+      const text = await file.text()
+      const vtt = /\.vtt$/i.test(file.name) ? convertSrtToVtt(text) : convertSrtToVtt(text)
+      const blob = new Blob([vtt], { type: 'text/vtt' })
+      const url = URL.createObjectURL(blob)
+      const id = `upload-${Date.now()}`
+      const entry = { id, label: `${file.name} (custom)`, lang: 'custom', url, kind: 'upload' }
+      setUploadedSubs((prev) => [...prev, entry])
+      setActiveSubtitle(id)
+    } catch (err) {
+      console.warn('[Subtitles] Failed to load custom subtitle:', err)
+    } finally {
+      if (subtitleInputRef.current) subtitleInputRef.current.value = ''
+      setShowSubtitleMenu(false)
+      handleUserActivity()
+    }
+  }
+
+  const subtitlesOn = activeSubtitle !== 'off'
 
   const playedPercent = duration > 0 ? (currentTime / duration) * 100 : 0
   const videoFiles = torrentInfo?.files?.filter((f) => f.isVideo) || []
@@ -278,9 +370,12 @@ export default function StreamCinemaPlayer({
       )}
     >
       {/* HTML5 Video Element */}
+      <style>{`video::cue { background: rgba(0,0,0,0.7); color: #fff; font-size: 0.95em; }`}</style>
       <video
         ref={videoRef}
+        key={streamData.streamUrl}
         src={streamData.streamUrl}
+        crossOrigin="anonymous"
         onClick={togglePlay}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
@@ -296,7 +391,18 @@ export default function StreamCinemaPlayer({
         }}
         className="w-full h-full object-contain cursor-pointer"
         playsInline
-      />
+      >
+        {allSubtitleTracks.map((t) => (
+          <track
+            key={t.id}
+            data-track-id={t.id}
+            kind="subtitles"
+            src={t.url}
+            srcLang={t.lang || 'und'}
+            label={t.label}
+          />
+        ))}
+      </video>
 
       {/* Buffering Indicator */}
       {isBuffering && !playbackError && (
@@ -455,8 +561,62 @@ export default function StreamCinemaPlayer({
             </div>
           </div>
 
-          {/* Right Controls: Speed, PiP, Fullscreen */}
+          {/* Right Controls: Subtitles, Speed, PiP, Fullscreen */}
           <div className="flex items-center gap-2 relative">
+            {/* Subtitles / CC */}
+            <div className="relative">
+              <button
+                onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
+                className={clsx(
+                  "p-2 rounded-xl transition-colors",
+                  subtitlesOn ? "bg-primary/40 text-white" : "hover:bg-white/20"
+                )}
+                title={subtitlesOn ? 'Subtitles on (C)' : 'Subtitles off (C)'}
+              >
+                {subtitlesOn ? <Captions size={16} /> : <CaptionsOff size={16} className="opacity-60" />}
+              </button>
+              {showSubtitleMenu && (
+                <div className="absolute bottom-9 right-0 bg-secondary/95 backdrop-blur-xl border border-border/80 rounded-xl py-1 shadow-2xl z-30 min-w-[220px] max-w-[300px]">
+                  <button
+                    onClick={() => { setActiveSubtitle('off'); setShowSubtitleMenu(false); handleUserActivity() }}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/30 transition-colors flex items-center justify-between gap-2"
+                  >
+                    <span>Off</span>
+                    {activeSubtitle === 'off' && <Check size={12} className="text-primary" />}
+                  </button>
+                  {allSubtitleTracks.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => { setActiveSubtitle(t.id); setShowSubtitleMenu(false); handleUserActivity() }}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/30 transition-colors flex items-center justify-between gap-2"
+                      title={t.url}
+                    >
+                      <span className="truncate flex-1">{t.label}</span>
+                      {activeSubtitle === t.id && <Check size={12} className="text-primary flex-shrink-0" />}
+                    </button>
+                  ))}
+                  <div className="border-t border-border/60 mt-1 pt-1">
+                    <button
+                      onClick={() => subtitleInputRef.current?.click()}
+                      className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/30 transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
+                    >
+                      <Upload size={12} />
+                      <span>Load .srt / .vtt…</span>
+                    </button>
+                    <p className="px-3 py-1 text-[10px] text-muted-foreground leading-snug">
+                      Embedded MKV subs need VLC via the external-player button.
+                    </p>
+                  </div>
+                </div>
+              )}
+              <input
+                ref={subtitleInputRef}
+                type="file"
+                accept=".srt,.vtt"
+                className="hidden"
+                onChange={handleSubtitleUpload}
+              />
+            </div>
             {/* Speed Selector */}
             <div className="relative">
               <button
