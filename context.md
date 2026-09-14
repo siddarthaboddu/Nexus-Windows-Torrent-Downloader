@@ -2,7 +2,7 @@
 
 ## 1. Project Overview
 
-**Nexus** is a native-feeling, high-performance Windows BitTorrent desktop client built with **Electron**, **React 19**, and **WebTorrent**. It delivers a modern, dark-mode glassmorphism experience with low system resource consumption, native Windows shell integrations (protocol association, single instance locking, taskbar tray, insomnia mode, native notifications), and robust session persistence.
+**Nexus** is a native-feeling, high-performance Windows BitTorrent desktop client built with **Electron**, **React 19**, and **WebTorrent**. It has two isolated modes: persistent torrent downloads and ephemeral live video streaming. It delivers a modern, dark-mode glassmorphism experience with native Windows shell integrations (protocol association, single instance locking, taskbar tray, insomnia mode, native notifications), and robust session persistence.
 
 - **Application Name**: Nexus Torrent (`com.nexus.torrent`)
 - **Version**: 1.0.0
@@ -38,12 +38,16 @@ flowchart TB
         SettingsView["Settings (Limits, Port, Tray, Theme)"]
         Modals["AddTorrentModal & DeleteTorrentModal"]
         Hook["useTorrents() Custom Hook"]
+        StreamViews["StreamView, picker, cinema player & telemetry"]
+        StreamHook["useTorrentStream() Custom Hook"]
 
         UI --> Layout
         UI --> Dashboards
         UI --> SettingsView
         UI --> Modals
+        UI --> StreamViews
         Dashboards --> Hook
+        StreamViews --> StreamHook
         Modals --> Hook
     end
 
@@ -54,15 +58,20 @@ flowchart TB
     subgraph Main ["Main Process (Node.js)"]
         MainEntry["electron/main.js"]
         WTEngine["WebTorrent Client Instance"]
+        StreamEngine["StreamManager: Ephemeral WebTorrent Client"]
+        StreamServer["127.0.0.1 HTTP Range Server"]
         StateMgr["Managed State & Config Storage (JSON)"]
         WinSys["Tray, Insomnia Mode, Windows Protocol, Notifications"]
 
         MainEntry --> WTEngine
+        MainEntry --> StreamEngine
+        StreamEngine --> StreamServer
         MainEntry --> StateMgr
         MainEntry --> WinSys
     end
 
     Hook <--> Bridge
+    StreamHook <--> Bridge
     SettingsView <--> Bridge
     Bridge <--> MainEntry
 ```
@@ -98,7 +107,6 @@ Nexus-Windows-Torrent-Downloader/
 │   │   │   ├── AddTorrentModal.jsx  # Modal for adding magnet links or .torrent files + destination folder
 │   │   │   └── DeleteTorrentModal.jsx # Confirmation modal with toggle to delete files from disk
 │   │   └── streaming/
-│   │       ├── StreamFilePicker.jsx  # Media file inspection & selection
 │   │       ├── StreamCinemaPlayer.jsx # In-app cinema player with custom HUD & keyboard shortcuts
 │   │       ├── StreamFilePicker.jsx # Filterable video list with badges
 │   │       ├── StreamTelemetryBar.jsx # Real-time bandwidth, peer count, buffer progress
@@ -134,11 +142,33 @@ Nexus-Windows-Torrent-Downloader/
 - **Paused Torrents**: WebTorrent does not natively have an efficient "pause" that stops disk/network work while keeping metadata in memory without consuming swarm sockets. Nexus destroys the active WebTorrent instance for that torrent while preserving its progress and file status in `managedTorrents`. Resuming triggers a fast resume via `client.add(magnetURI, { path })`.
 - **Force Re-check (`reverify-torrent`)**: Removes the torrent from the client while keeping files on disk, then re-adds it to trigger WebTorrent's block verification algorithm against existing disk files.
 
-### 5.2 Throttled Persistence
+### 5.2 Ephemeral Live Video Streaming
+
+- **Isolation**: `StreamManager` owns a second WebTorrent client. Stream metadata, selected pieces, HTTP connections, and cache files are separate from `client` and `managedTorrents`.
+- **Source and file selection**: `TorrentSourceInput` submits a magnet link or `.torrent` source to `stream-parse-torrent`. The manager waits for metadata, returns the indexed file list, and keeps the exact torrent instance that produced that list. `stream-start` uses that instance, preventing same-info-hash collisions with an unready persistent download.
+- **Download scope**: On start, all non-selected files are deselected and the selected file is selected. The stream is stored below Electron's temp directory at `nexus-stream-cache/<infoHash>`.
+- **Media delivery**: A local server binds to `127.0.0.1` on an OS-selected port. It serves the selected file using HTTP byte ranges (`206 Partial Content`, `Accept-Ranges`, `Content-Range`, and content-specific MIME types), allowing the Chromium video element to seek.
+- **Renderer lifecycle**: `useTorrentStream` moves through `idle`, `parsing`, `ready`, `streaming`, and `error`; it polls `stream-get-status` every second only while streaming. `StreamCinemaPlayer` plays the local URL, while `StreamTelemetryBar` displays stream statistics.
+- **Stop and shutdown**: `stream-stop`, app shutdown, and the next selected stream close the active HTTP server. Ephemeral torrents are removed and their temp cache is deleted. Startup also attempts to purge abandoned stream-cache folders.
+- **Known limits**: Playback depends on Chromium codec support. MP4 and WebM are the most dependable; other containers/codecs can require the external-player action. There is no transcoding.
+
+### 5.3 Streaming UI and Public Contract
+
+| File | Responsibility |
+| :--- | :--- |
+| `src/components/streaming/TorrentSourceInput.jsx` | Magnet input, `.torrent` drag/drop, and active-download source selection |
+| `src/components/streaming/StreamFilePicker.jsx` | Indexed file list, video filtering, search, and stream action |
+| `src/components/streaming/StreamView.jsx` | Stream-state UI, error recovery, stop, and promotion coordination |
+| `src/components/streaming/StreamCinemaPlayer.jsx` | HTML5 video playback, controls, keyboard shortcuts, file switching, and external-player action |
+| `src/components/streaming/StreamTelemetryBar.jsx` | Transfer speed, peer count, progress, and stream health display |
+| `src/hooks/useTorrentStream.js` | Renderer IPC calls and telemetry polling |
+| `electron/utils/StreamManager.js` | Ephemeral torrent lifecycle, range server, selected-file isolation, and cleanup |
+
+### 5.4 Throttled Persistence
 - Torrents state is written to `nexus-config.json` in the Electron `userData` directory.
 - High-frequency download progress updates could cause disk thrashing. Nexus uses a **2-second throttle** (`SAVE_THROTTLE = 2000`) with a queued write mechanism (`saveQueued`) to ensure progress is saved consistently without disk degradation.
 
-### 5.3 Windows OS Integration
+### 5.5 Windows OS Integration
 1. **Magnet Protocol Client**:
    - Registered via `app.setAsDefaultProtocolClient('magnet')`.
    - On Windows cold start, parses `process.argv` for `magnet:`.
@@ -210,11 +240,17 @@ npm run dev
 # 3. Build Bundles
 npm run build
 
-# 4. Generate Production Installer
+# 4. Verify the WebTorrent native streaming dependency when needed
+npm run prepare:native
+
+# 5. Generate Production Installer
 npm run dist
 ```
 
 ### Packaging Details
 - Uses `electron-builder` with `"npmRebuild": false` configured in `package.json` to prevent unnecessary and incompatible native rebuilds of optional C++ dependencies (`bufferutil`, `utf-8-validate`).
+- WebTorrent's `node-datachannel` dependency requires `node_datachannel.node`. `npm run prepare:native` verifies that N-API binary and downloads its prebuild if the dependency install hook was blocked.
+- Electron Builder explicitly unpacks `node_modules/node-datachannel/build/Release/*.node`; native modules cannot be loaded from inside `app.asar`.
+- `npm run dist` runs `prepare:native` before Vite and Electron Builder, so an installer cannot be created with the known missing-binary failure.
 - The NSIS installer executable is placed in `release/Nexus Torrent Setup 1.0.0.exe`.
 - Binary output is excluded from git tracking via `.gitignore` to keep git history lightweight and comply with GitHub's 100 MB hard file limit. Production binaries are distributed via **GitHub Releases**.
