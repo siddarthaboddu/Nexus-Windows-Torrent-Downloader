@@ -276,7 +276,7 @@ const FileTreeNode = ({ node, level = 0, onToggleFile, infoHash, onOpenFile, onO
     );
 };
 
-const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder }) => {
+const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder, onSetStrategy }) => {
     const [speedHistory, setSpeedHistory] = useState([]);
     const [activeTab, setActiveTab] = useState('overview');
     const [copiedHash, setCopiedHash] = useState(false);
@@ -482,6 +482,33 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder })
                                 <Activity size={16} /> <span className="text-xs font-medium">Share Ratio</span>
                             </div>
                             <div className="text-2xl font-bold text-foreground">{torrent.ratio?.toFixed(2) || '0.00'}</div>
+                        </div>
+                        <div className="bg-secondary/50 p-4 rounded-xl border border-border">
+                            <div className="flex items-center gap-2 text-muted-foreground mb-2">
+                                <ArrowDown size={16} /> <span className="text-xs font-medium">Download Strategy</span>
+                            </div>
+                            <div className="flex gap-1.5">
+                                {[
+                                    { id: 'sequential', label: 'Sequential' },
+                                    { id: 'rarest', label: 'Rarest first' }
+                                ].map((s) => (
+                                    <button
+                                        key={s.id}
+                                        type="button"
+                                        disabled={torrent.paused}
+                                        onClick={() => onSetStrategy && onSetStrategy(torrent.infoHash, s.id)}
+                                        className={clsx(
+                                            "flex-1 px-2 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                                            (torrent.strategy || 'sequential') === s.id
+                                                ? "bg-primary/20 text-primary border-primary/40"
+                                                : "bg-secondary/40 text-muted-foreground border-border/60 hover:text-foreground"
+                                        )}
+                                        title={s.id === 'sequential' ? 'Download pieces in order — best for previews' : 'Download rarest pieces first — can finish faster'}
+                                    >
+                                        {s.label}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                         <div className="bg-secondary/50 p-4 rounded-xl border border-border col-span-2 flex items-center justify-between gap-4">
                             <div className="min-w-0 flex-1">

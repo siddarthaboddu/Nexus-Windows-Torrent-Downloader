@@ -3,6 +3,7 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import { app } from 'electron'
+import { parseRangeHeader } from './rangeParser.js'
 
 const VIDEO_EXTENSIONS = new Set([
   'mp4', 'm4v', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'ogv', '3gp'
@@ -33,7 +34,7 @@ const SUBTITLE_LANG_LABELS = {
 function detectSubtitleLang(fileName) {
   const base = (fileName || '').toLowerCase()
   // Matches ".en.", "_en_", "-en-", "[en]", "(en)", ".eng.", etc.
-  const m = base.match(/[.\-_ \[\(\]]+([a-z]{2,3})(?=[.\-_ \[\]\)])/i)
+  const m = base.match(/[.\-_ [()\]]+([a-z]{2,3})(?=[.\-_ [()\]])/i)
   if (m) {
     const code = m[1].toLowerCase()
     if (SUBTITLE_LANG_LABELS[code]) {
@@ -142,8 +143,59 @@ export class StreamManager {
     this.activeFile = null
     this.activeStream = null // Current active read stream if any
     this.parsedTorrents = new Map() // infoHash -> the instance used for metadata selection
+    this.parsedAt = new Map() // infoHash -> Date.now() of parse, for stale-entry eviction
+    // Sweep parsed-but-never-streamed torrents so abandoned picks stop
+    // consuming swarm handles and temp disk. Runs every 5 minutes.
+    this._evictTimer = setInterval(() => {
+      this.evictStaleParsed().catch(() => { })
+    }, 5 * 60 * 1000)
+    try { this._evictTimer.unref?.() } catch { }
     this.tempCacheRoot = path.join(app.getPath('temp'), 'nexus-stream-cache')
     this.isUsingMainClient = false
+    // Loopback-only by default. LAN sharing (other devices on your network can
+    // reach the stream) binds 0.0.0.0 instead — toggled from Settings.
+    this.bindHost = '127.0.0.1'
+  }
+
+  setLanSharing(enabled) {
+    this.bindHost = enabled ? '0.0.0.0' : '127.0.0.1'
+    console.log(`[StreamManager] LAN sharing ${enabled ? 'enabled (0.0.0.0)' : 'disabled (127.0.0.1)'}. Applies to the next stream.`)
+  }
+
+  trackParsed(torrent) {
+    const hash = (torrent.infoHash || '').toLowerCase()
+    if (!hash) return
+    this.parsedTorrents.set(hash, torrent)
+    this.parsedAt.set(hash, Date.now())
+  }
+
+  untrackParsed(infoHash) {
+    const hash = (infoHash || '').toLowerCase()
+    if (!hash) return
+    this.parsedTorrents.delete(hash)
+    this.parsedAt.delete(hash)
+  }
+
+  async evictStaleParsed() {
+    const TTL = 15 * 60 * 1000
+    const now = Date.now()
+    for (const [hash, at] of this.parsedAt) {
+      if (now - at < TTL) continue
+      if (this.activeTorrent && (this.activeTorrent.infoHash || '').toLowerCase() === hash) continue
+      const t = this.parsedTorrents.get(hash)
+      this.untrackParsed(hash)
+      try {
+        if (t && !t.destroyed && this.streamClient && this.streamClient.get(hash) === t) {
+          await new Promise(res => {
+            try { this.streamClient.remove(t, () => res()) } catch { res() }
+          })
+          console.log(`[StreamManager] Evicted stale parsed torrent ${hash}`)
+        }
+      } catch (e) {
+        console.warn('[StreamManager] Eviction failed:', e.message)
+      }
+      await this.cleanTempCache(hash)
+    }
   }
 
   getMimeType(fileName) {
@@ -236,7 +288,7 @@ export class StreamManager {
       } catch { }
 
       if (existingInStream && existingInStream.metadata && existingInStream.files?.length) {
-        this.parsedTorrents.set((existingInStream.infoHash || '').toLowerCase(), existingInStream)
+        this.trackParsed(existingInStream)
         return resolve(this.formatTorrentMetadata(existingInStream))
       }
 
@@ -247,7 +299,7 @@ export class StreamManager {
       try {
         const torrent = client.add(torrentSource, { path: tempDir, deselect: true }, (t) => {
           clearTimeout(timeout)
-          this.parsedTorrents.set((t.infoHash || '').toLowerCase(), t)
+          this.trackParsed(t)
           resolve(this.formatTorrentMetadata(t))
         })
         if (torrent && typeof torrent.on === 'function') {
@@ -366,8 +418,14 @@ export class StreamManager {
     const mimeType = this.getMimeType(targetFile.name)
 
     const server = http.createServer(async (req, res) => {
-      // Set CORS headers for Electron webview/fetch compatibility
-      res.setHeader('Access-Control-Allow-Origin', '*')
+      // CORS: same-origin page loads need no header, but <track> fetches run
+      // in CORS mode. Echo only loopback origins so arbitrary websites
+      // cannot read the local stream.
+      const reqOrigin = req.headers.origin
+      if (reqOrigin && /^(https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?|null)$/.test(reqOrigin)) {
+        res.setHeader('Access-Control-Allow-Origin', reqOrigin)
+        res.setHeader('Vary', 'Origin')
+      }
       res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type')
 
       if (req.method === 'OPTIONS') {
@@ -413,19 +471,15 @@ export class StreamManager {
       const fileSize = targetFile.length
 
       if (range) {
-        // Parse Range header e.g. "bytes=0-1048576"
-        const parts = range.replace(/bytes=/, '').split('-')
-        const start = parseInt(parts[0], 10)
-        const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1
-
-        if (isNaN(start) || start >= fileSize || (end && end >= fileSize)) {
+        const parsed = parseRangeHeader(range, fileSize)
+        if (!parsed) {
           res.writeHead(416, {
             'Content-Range': `bytes */${fileSize}`
           })
           res.end()
           return
         }
-
+        const { start, end } = parsed
         const chunkSize = (end - start) + 1
         res.writeHead(206, {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
@@ -477,9 +531,9 @@ export class StreamManager {
       }
     })
 
-    // Listen on dynamic available port
+    // Listen on dynamic available port (loopback, or LAN when sharing is on)
     await new Promise((resolve, reject) => {
-      server.listen(0, '127.0.0.1', () => {
+      server.listen(0, this.bindHost, () => {
         const address = server.address()
         this.serverPort = address.port
         this.httpServer = server
@@ -517,23 +571,29 @@ export class StreamManager {
   }
 
   /**
-   * Stop HTTP server without destroying torrent
+   * Stop HTTP server without destroying torrent.
+   * Never hangs: detaches first, then races close() against a 3s timeout.
    */
   async stopServerOnly() {
-    if (this.httpServer) {
-      try {
-        if (typeof this.httpServer.closeAllConnections === 'function') {
-          this.httpServer.closeAllConnections()
-        }
-      } catch { }
-      await new Promise((resolve) => {
-        this.httpServer.close(() => {
-          this.httpServer = null
-          this.serverPort = null
+    const server = this.httpServer
+    if (!server) return
+    this.httpServer = null
+    this.serverPort = null
+    try {
+      if (typeof server.closeAllConnections === 'function') {
+        server.closeAllConnections()
+      }
+    } catch { }
+    await Promise.race([
+      new Promise((resolve) => {
+        try {
+          server.close(() => resolve())
+        } catch {
           resolve()
-        })
-      })
-    }
+        }
+      }),
+      new Promise((resolve) => setTimeout(resolve, 3000))
+    ])
   }
 
   /**
@@ -550,7 +610,7 @@ export class StreamManager {
     this.activeFile = null
     this.activeFileIndex = null
     this.isUsingMainClient = false
-    if (hash) this.parsedTorrents.delete(hash)
+    if (hash) this.untrackParsed(hash)
 
     // If it was an ephemeral streamClient torrent, remove it and clean temp files
     if (torrent && !isUsingMain && this.streamClient) {

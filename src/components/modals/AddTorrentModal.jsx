@@ -1,5 +1,13 @@
-import React, { useState, useRef } from 'react';
-import { X, Magnet, Upload, Folder, ArrowRight, ArrowLeft } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { X, Magnet, Upload, Folder, ArrowRight, ArrowLeft, Users, Activity } from 'lucide-react';
+
+const formatBytes = (bytes) => {
+    if (!+bytes) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+};
 
 const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, initialFile }) => {
     const [step, setStep] = useState((initialMagnet || initialFile) ? 2 : 1);
@@ -7,6 +15,7 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
     const [filePath, setFilePath] = useState(initialFile || null);
     const [destination, setDestination] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [health, setHealth] = useState(null); // { loading } | { info } | { error }
     const fileInputRef = useRef(null);
     const selectFolder = async () => window.ipcRenderer ? window.ipcRenderer.invoke('select-folder') : null;
 
@@ -29,6 +38,31 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
         reader.readAsArrayBuffer(file);
     };
 
+    // Swarm-health pre-check on the destination step (early peer/size reading).
+    // NOTE: kept above the `if (!isOpen)` early return to preserve hook order.
+    useEffect(() => {
+        if (!isOpen) return;
+        if (step !== 2 || (!magnet && !filePath)) return;
+        let cancelled = false;
+        setHealth({ loading: true });
+        (async () => {
+            try {
+                if (!window.ipcRenderer) throw new Error('IPC unavailable');
+                let source = magnet;
+                if (filePath) {
+                    if (filePath.data instanceof ArrayBuffer) source = new Uint8Array(filePath.data);
+                    else if (filePath.path) source = filePath.path;
+                    else source = filePath;
+                }
+                const info = await window.ipcRenderer.invoke('stream-parse-torrent', source);
+                if (!cancelled) setHealth({ loading: false, info });
+            } catch (e) {
+                if (!cancelled) setHealth({ loading: false, error: e.message || 'Swarm check failed' });
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [isOpen, step, magnet, filePath]);
+
     if (!isOpen) return null;
 
     const resetState = () => {
@@ -37,6 +71,7 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
         setFilePath(null);
         setDestination('');
         setIsLoading(false);
+        setHealth(null);
     };
 
     const handleClose = () => {
@@ -173,6 +208,40 @@ const AddTorrentModal = ({ isOpen, onClose, onAdd, defaultPath, initialMagnet, i
                                     <p className="text-xs text-muted-foreground font-mono truncate">
                                         {filePath?.name || magnet}
                                     </p>
+                                </div>
+
+                                <div className="p-4 bg-secondary/50 rounded-lg border border-border/50">
+                                    <h4 className="text-sm font-medium text-foreground mb-2 flex items-center gap-1.5">
+                                        <Activity size={14} className="text-primary" /> Swarm Health
+                                    </h4>
+                                    {(!health || health.loading) && (
+                                        <p className="text-xs text-muted-foreground">Checking peers and metadata…</p>
+                                    )}
+                                    {health?.error && (
+                                        <p className="text-xs text-muted-foreground">Swarm check unavailable — you can still start the download.</p>
+                                    )}
+                                    {health?.info && (() => {
+                                        const peers = health.info.numPeers || 0;
+                                        const level = peers >= 10 ? 'Healthy' : peers >= 3 ? 'Fair' : 'Weak';
+                                        const badge = peers >= 10
+                                            ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                            : peers >= 3
+                                                ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                                                : 'bg-rose-500/15 text-rose-400 border-rose-500/30';
+                                        return (
+                                            <div className="space-y-1.5">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${badge}`}>{level}</span>
+                                                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                                        <Users size={12} /> {peers} peer{peers === 1 ? '' : 's'} (early reading)
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs text-muted-foreground truncate">
+                                                    {health.info.name} • {formatBytes(health.info.length)} • {(health.info.files || []).length} file{(health.info.files || []).length === 1 ? '' : 's'}
+                                                </p>
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
 
                                 <div>

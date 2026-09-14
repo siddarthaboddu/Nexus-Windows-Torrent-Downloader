@@ -22,22 +22,13 @@ const TorrentCard = ({
     openFolder,
     compactMode,
     onToggleFile,
+    onSetStrategy,
     openFile,
     openFileFolder,
     showFileContextMenu,
     showTorrentContextMenu
 }) => {
     const [expanded, setExpanded] = useState(false);
-    const [copied, setCopied] = useState(false);
-
-    const handleCopyMagnet = (e) => {
-        e.stopPropagation();
-        if (torrent.magnetURI) {
-            navigator.clipboard.writeText(torrent.magnetURI);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        }
-    };
 
     const handleContextMenu = (e) => {
         if (e.target.closest('.custom-scrollbar') || e.target.closest('button') || e.target.closest('input')) {
@@ -58,9 +49,67 @@ const TorrentCard = ({
             )}
             onContextMenu={handleContextMenu}
         >
+            <TorrentHeader
+                torrent={torrent}
+                expanded={expanded}
+                compactMode={compactMode}
+                onToggleExpand={() => setExpanded(!expanded)}
+                onTogglePause={onTogglePause}
+                onRemove={onRemove}
+                openFolder={openFolder}
+                onReverify={onReverify}
+            />
+
+            <ProgressBar progress={torrent.progress || 0} />
+
+            {expanded && (
+                <TorrentDetails
+                    torrent={torrent}
+                    onToggleFile={(fileIndices, selected) => onToggleFile && onToggleFile(torrent.infoHash, fileIndices, selected)}
+                    onSetStrategy={onSetStrategy}
+                    onOpenFile={openFile}
+                    onOpenFileFolder={openFileFolder}
+                    onContextMenu={showFileContextMenu}
+                />
+            )}
+        </div>
+    )
+}
+
+// Header row: re-rendered at most when a display-rounded field actually changes,
+// instead of on every 1s torrents-update broadcast. The expanded details below
+// stay live because TorrentCard itself still re-renders each tick.
+const TorrentHeader = React.memo(({
+    torrent,
+    expanded,
+    compactMode,
+    onToggleExpand,
+    onTogglePause,
+    onRemove,
+    openFolder,
+    onReverify
+}) => {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopyMagnet = (e) => {
+        e.stopPropagation();
+        if (torrent.magnetURI) {
+            navigator.clipboard.writeText(torrent.magnetURI);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        }
+    };
+
+    return (
+        <>
             <div
                 className="flex justify-between items-start mb-2 cursor-pointer"
-                onClick={() => setExpanded(!expanded)}
+                onClick={onToggleExpand}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleExpand(); } }}
+                role="button"
+                tabIndex={0}
+                aria-expanded={expanded}
+                aria-label={`${torrent.name || 'Torrent'}: ${torrent.state || ''}. Activate to ${expanded ? 'collapse' : 'expand'} details.`}
             >
                 <div className="flex items-center gap-3 overflow-hidden">
                     <div className={clsx("rounded-lg transition-colors flex items-center justify-center",
@@ -93,6 +142,7 @@ const TorrentCard = ({
                             onClick={(e) => { e.stopPropagation(); onTogglePause() }}
                             className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition"
                             title={torrent.state === 'Paused' || torrent.state === 'Completed' ? "Resume" : "Pause"}
+                            aria-label={torrent.state === 'Paused' || torrent.state === 'Completed' ? `Resume ${torrent.name || 'torrent'}` : `Pause ${torrent.name || 'torrent'}`}
                         >
                             {torrent.state === 'Paused' || torrent.state === 'Completed' ? <Play size={16} /> : <Pause size={16} />}
                         </button>
@@ -101,6 +151,7 @@ const TorrentCard = ({
                             onClick={handleCopyMagnet}
                             className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition"
                             title={copied ? "Magnet link copied!" : "Copy Magnet Link"}
+                            aria-label="Copy magnet link"
                         >
                             {copied ? <Check size={16} className="text-emerald-500" /> : <Link size={16} />}
                         </button>
@@ -109,6 +160,7 @@ const TorrentCard = ({
                             onClick={(e) => { e.stopPropagation(); openFolder && openFolder(torrent.infoHash); }}
                             className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition"
                             title="Open Folder"
+                            aria-label={`Open folder for ${torrent.name || 'torrent'}`}
                         >
                             <Folder size={16} />
                         </button>
@@ -117,6 +169,7 @@ const TorrentCard = ({
                             onClick={(e) => { e.stopPropagation(); onRemove(torrent.infoHash); }}
                             className="p-1.5 hover:bg-destructive/20 rounded text-muted-foreground hover:text-destructive transition"
                             title="Delete Torrent"
+                            aria-label={`Delete ${torrent.name || 'torrent'}`}
                         >
                             <Trash2 size={16} />
                         </button>
@@ -125,6 +178,7 @@ const TorrentCard = ({
                             onClick={(e) => { e.stopPropagation(); onReverify && onReverify(torrent.infoHash); }}
                             className="p-1.5 hover:bg-secondary rounded text-muted-foreground hover:text-foreground transition"
                             title="Force Re-check"
+                            aria-label={`Force re-check ${torrent.name || 'torrent'}`}
                         >
                             <RotateCw size={16} />
                         </button>
@@ -154,19 +208,29 @@ const TorrentCard = ({
             </div>
 
             <ProgressBar progress={torrent.progress || 0} />
-
-            {expanded && (
-                <TorrentDetails
-                    torrent={torrent}
-                    onToggleFile={(fileIndices, selected) => onToggleFile && onToggleFile(torrent.infoHash, fileIndices, selected)}
-                    onOpenFile={openFile}
-                    onOpenFileFolder={openFileFolder}
-                    onContextMenu={showFileContextMenu}
-                />
-            )}
-        </div>
-    )
-}
+        </>
+    );
+}, (prev, next) => {
+    // Re-render only when a display-rounded field changes. Function props
+    // (actions) are intentionally ignored: they key off infoHash/state, and
+    // every state transition below re-renders through the torrent object.
+    const a = prev.torrent;
+    const b = next.torrent;
+    return a.infoHash === b.infoHash
+        && a.name === b.name
+        && a.magnetURI === b.magnetURI
+        && a.state === b.state
+        && a.paused === b.paused
+        && Math.round((a.progress || 0) * 1000) === Math.round((b.progress || 0) * 1000)
+        && Math.round((a.downloadSpeed || 0) / 1024) === Math.round((b.downloadSpeed || 0) / 1024)
+        && Math.round((a.uploadSpeed || 0) / 1024) === Math.round((b.uploadSpeed || 0) / 1024)
+        && (a.numPeers || 0) === (b.numPeers || 0)
+        && Math.round((a.downloaded || 0) / 10240) === Math.round((b.downloaded || 0) / 10240)
+        && Math.round(a.length || 0) === Math.round(b.length || 0)
+        && Math.round(a.timeRemaining || 0) === Math.round(b.timeRemaining || 0)
+        && prev.expanded === next.expanded
+        && prev.compactMode === next.compactMode;
+});
 
 function formatBytes(bytes, decimals = 2) {
     if (!+bytes) return '0 B'
@@ -199,6 +263,7 @@ const TorrentList = ({
     openFolder,
     compactMode,
     onToggleFile,
+    onSetStrategy,
     onPauseAll,
     onResumeAll,
     openFile,
@@ -310,6 +375,7 @@ const TorrentList = ({
                                             onReverify={onReverify}
                                             compactMode={compactMode}
                                             onToggleFile={onToggleFile}
+                                            onSetStrategy={onSetStrategy}
                                             openFile={openFile}
                                             openFileFolder={openFileFolder}
                                             showFileContextMenu={showFileContextMenu}

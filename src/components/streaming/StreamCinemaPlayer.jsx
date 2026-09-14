@@ -16,7 +16,9 @@ import {
   Captions,
   CaptionsOff,
   Upload,
-  Check
+  Check,
+  Cast,
+  Copy
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -64,6 +66,9 @@ export default function StreamCinemaPlayer({
   const [showFileDrawer, setShowFileDrawer] = useState(false)
   const [playbackError, setPlaybackError] = useState(null)
   const [showSubtitleMenu, setShowSubtitleMenu] = useState(false)
+  const [showCastMenu, setShowCastMenu] = useState(false)
+  const [lanIp, setLanIp] = useState(null) // null = not fetched, false = unavailable
+  const [copiedLan, setCopiedLan] = useState(false)
   const [uploadedSubs, setUploadedSubs] = useState([]) // { id, label, url }
   const [activeSubtitle, setActiveSubtitle] = useState('off') // 'off' | subtitle url | uploaded id
   const subtitleInputRef = useRef(null)
@@ -79,6 +84,7 @@ export default function StreamCinemaPlayer({
         setShowControls(false)
         setShowRateMenu(false)
         setShowSubtitleMenu(false)
+        setShowCastMenu(false)
       }, 2500)
     }
   }, [isPlaying])
@@ -95,6 +101,7 @@ export default function StreamCinemaPlayer({
       setShowControls(false)
       setShowRateMenu(false)
       setShowSubtitleMenu(false)
+      setShowCastMenu(false)
     }, 2500)
 
     return () => {
@@ -317,7 +324,9 @@ export default function StreamCinemaPlayer({
 
   useEffect(() => {
     return () => {
-      uploadedSubsRef.current.forEach((t) => { try { URL.revokeObjectURL(t.url) } catch { } })
+      uploadedSubsRef.current.forEach((t) => {
+        try { URL.revokeObjectURL(t.url) } catch (e) { console.warn('[Subtitles] Revoke failed:', e) }
+      })
     }
   }, [])
 
@@ -356,6 +365,33 @@ export default function StreamCinemaPlayer({
   }
 
   const subtitlesOn = activeSubtitle !== 'off'
+
+  // ---- Cast / other-device playback ----
+  // The stream URL is loopback-only unless LAN sharing is enabled in Settings.
+  const openCastMenu = async () => {
+    const next = !showCastMenu
+    setShowCastMenu(next)
+    if (next && lanIp === null && window.ipcRenderer) {
+      try {
+        setLanIp(await window.ipcRenderer.invoke('get-lan-ip'))
+      } catch {
+        setLanIp(false)
+      }
+    }
+    handleUserActivity()
+  }
+  const lanUrl = lanIp && streamData?.streamUrl
+    ? streamData.streamUrl.replace('127.0.0.1', lanIp)
+    : null
+  const copyText = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedLan(true)
+      setTimeout(() => setCopiedLan(false), 1500)
+    } catch (e) {
+      console.warn('[Cast] Copy failed:', e)
+    }
+  }
 
   const playedPercent = duration > 0 ? (currentTime / duration) * 100 : 0
   const videoFiles = torrentInfo?.files?.filter((f) => f.isVideo) || []
@@ -501,6 +537,7 @@ export default function StreamCinemaPlayer({
             min="0"
             max="100"
             step="0.1"
+            aria-label="Seek"
             value={playedPercent || 0}
             onChange={handleSeekChange}
             className="w-full h-4 opacity-0 cursor-pointer z-10"
@@ -515,6 +552,7 @@ export default function StreamCinemaPlayer({
               onClick={togglePlay}
               className="p-2 hover:bg-white/20 rounded-xl transition-colors"
               title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? <Pause size={18} className="fill-current" /> : <Play size={18} className="fill-current" />}
             </button>
@@ -523,6 +561,7 @@ export default function StreamCinemaPlayer({
               onClick={() => skipSeconds(-10)}
               className="p-2 hover:bg-white/20 rounded-xl transition-colors"
               title="Skip -10s"
+              aria-label="Skip back 10 seconds"
             >
               <RotateCcw size={16} />
             </button>
@@ -531,6 +570,7 @@ export default function StreamCinemaPlayer({
               onClick={() => skipSeconds(10)}
               className="p-2 hover:bg-white/20 rounded-xl transition-colors"
               title="Skip +10s"
+              aria-label="Skip forward 10 seconds"
             >
               <RotateCw size={16} />
             </button>
@@ -541,6 +581,7 @@ export default function StreamCinemaPlayer({
                 onClick={toggleMute}
                 className="p-2 hover:bg-white/20 rounded-xl transition-colors"
                 title={isMuted ? 'Unmute (M)' : 'Mute (M)'}
+                aria-label={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
               </button>
@@ -549,6 +590,7 @@ export default function StreamCinemaPlayer({
                 min="0"
                 max="1"
                 step="0.05"
+                aria-label="Volume"
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
                 className="w-16 h-1 bg-white/30 rounded-full accent-primary cursor-pointer transition-all"
@@ -561,8 +603,55 @@ export default function StreamCinemaPlayer({
             </div>
           </div>
 
-          {/* Right Controls: Subtitles, Speed, PiP, Fullscreen */}
+          {/* Right Controls: Cast, Subtitles, Speed, PiP, Fullscreen */}
           <div className="flex items-center gap-2 relative">
+            {/* Cast / Other devices */}
+            <div className="relative">
+              <button
+                onClick={openCastMenu}
+                className="p-2 hover:bg-white/20 rounded-xl transition-colors"
+                title="Watch on another device"
+                aria-label="Watch on another device. Activate to open cast options."
+              >
+                <Cast size={16} />
+              </button>
+              {showCastMenu && (
+                <div className="absolute bottom-9 right-0 bg-secondary/95 backdrop-blur-xl border border-border/80 rounded-xl py-1 shadow-2xl z-30 min-w-[250px] max-w-[320px]">
+                  <button
+                    onClick={() => copyText(streamData.streamUrl)}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/30 transition-colors flex items-center gap-2"
+                  >
+                    <Copy size={12} />
+                    <span>{copiedLan ? 'Copied!' : 'Copy stream URL'}</span>
+                  </button>
+                  <button
+                    onClick={() => { onOpenExternal(streamData.streamUrl); setShowCastMenu(false) }}
+                    className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/30 transition-colors flex items-center gap-2"
+                  >
+                    <ExternalLink size={12} />
+                    <span>Open in browser / default player</span>
+                  </button>
+                  <div className="border-t border-border/60 mt-1 pt-1 px-3 py-1.5">
+                    <p className="text-[11px] font-semibold text-foreground mb-0.5">Phone / TV / another PC</p>
+                    {lanUrl ? (
+                      <button
+                        onClick={() => copyText(lanUrl)}
+                        className="text-[11px] text-primary hover:underline font-mono break-all text-left"
+                        title="Click to copy"
+                      >
+                        {lanUrl}
+                      </button>
+                    ) : (
+                      <p className="text-[10px] text-muted-foreground leading-snug">
+                        {lanIp === false
+                          ? 'No LAN address found on this PC.'
+                          : 'Enable LAN Sharing in Settings, then point VLC (or any player) on the other device at the address shown here.'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             {/* Subtitles / CC */}
             <div className="relative">
               <button
@@ -572,6 +661,7 @@ export default function StreamCinemaPlayer({
                   subtitlesOn ? "bg-primary/40 text-white" : "hover:bg-white/20"
                 )}
                 title={subtitlesOn ? 'Subtitles on (C)' : 'Subtitles off (C)'}
+                aria-label={subtitlesOn ? 'Subtitles on. Activate to change.' : 'Subtitles off. Activate to change.'}
               >
                 {subtitlesOn ? <Captions size={16} /> : <CaptionsOff size={16} className="opacity-60" />}
               </button>
@@ -622,6 +712,7 @@ export default function StreamCinemaPlayer({
               <button
                 onClick={() => setShowRateMenu(!showRateMenu)}
                 className="px-2 py-1 hover:bg-white/20 rounded-lg text-xs font-semibold transition-colors"
+                aria-label={`Playback speed ${playbackRate}x. Activate to change.`}
               >
                 {playbackRate}x
               </button>
@@ -649,6 +740,7 @@ export default function StreamCinemaPlayer({
                 onClick={togglePiP}
                 className="p-2 hover:bg-white/20 rounded-xl transition-colors"
                 title="Picture in Picture"
+                aria-label="Toggle picture in picture"
               >
                 <PictureInPicture2 size={16} />
               </button>
@@ -659,6 +751,7 @@ export default function StreamCinemaPlayer({
               onClick={toggleFullscreen}
               className="p-2 hover:bg-white/20 rounded-xl transition-colors"
               title={isFullscreen ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
+              aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
             >
               {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
             </button>

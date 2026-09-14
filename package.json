@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "node --test test/",
     "preview": "vite preview",
     "prepare:native": "node scripts/ensure-node-datachannel.mjs",
     "dist": "npm run prepare:native && vite build && electron-builder"
@@ -50,6 +51,7 @@
     }
   },
   "dependencies": {
+    "check-disk-space": "^3.4.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.562.0",
     "react": "^19.2.0",

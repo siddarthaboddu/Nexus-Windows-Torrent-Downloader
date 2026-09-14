@@ -168,8 +168,7 @@ Nexus-Windows-Torrent-Downloader/
 - Torrents state is written to `nexus-config.json` in the Electron `userData` directory.
 - High-frequency download progress updates could cause disk thrashing. Nexus uses a **2-second throttle** (`SAVE_THROTTLE = 2000`) with a queued write mechanism (`saveQueued`) to ensure progress is saved consistently without disk degradation.
 
-### 5.5 Windows OS Integration
-1. **Magnet Protocol Client**:
+### 5.5 Windows OS Integration1. **Magnet Protocol Client**:
    - Registered via `app.setAsDefaultProtocolClient('magnet')`.
    - On Windows cold start, parses `process.argv` for `magnet:`.
    - On warm start, uses `app.requestSingleInstanceLock()` and catches `app.on('second-instance')` to forward the magnet URI to the focused window without opening a second instance.
@@ -185,6 +184,24 @@ Nexus-Windows-Torrent-Downloader/
    - Minimizes to tray on close if `minimizeToTray` is enabled.
 5. **Native Desktop Notifications**:
    - Uses native Windows toast notifications upon torrent completion with optional notification sound (`shell.beep()`).
+
+### 5.6 Competitor-Parity Features
+- **Per-torrent strategy**: `sequential` (preview-friendly) vs `rarest` (faster completion), persisted in `managedTorrents` and applied on every re-add; toggled from TorrentDetails.
+- **Seeding goals**: global target ratio and/or seed-time minutes auto-pause finished torrents with a notification (`completedAt` stamped on first sight of done).
+- **Speed scheduler**: daily time window (supports overnight) with its own caps, evaluated every 30s and on config change, falling back to configured limits outside the window.
+- **Watch folder**: `fs.watch` on a user folder auto-adds dropped `.torrent` files (stable-size check, archived to `processed/`).
+- **Disk safety**: `add-torrent` rejects when free space < payload size (`check-disk-space`); optional completed-folder auto-move with re-seed from the new path.
+- **Built-in search**: `SearchView` (General via Apibay, Movies via YTS) with per-row Download / Stream handoff to the Stream tab.
+- **Other-device playback**: cinema-player Cast menu (copy URL, open externally, LAN URL via `get-lan-ip`); optional LAN sharing binds the stream server to `0.0.0.0` for the next stream.
+- **Swarm health**: Add dialog reuses `stream-parse-torrent` for an early peers/size/files reading with a Healthy/Fair/Weak badge.
+
+### 5.7 Reliability Hardening
+- `add-torrent` has a 120s metadata timeout and magnet dedup; resume/re-verify/promote paths guard against double-adds.
+- HTTP Range parsing is strict RFC 7233 (`electron/utils/rangeParser.js`); CORS echoes loopback origins only; `open-external` allowlists `http(s)`.
+- Renderer-supplied paths are clamped inside the download dir (`electron/utils/safePath.js`); deletes are contained; `remove-torrent` awaits swarm removal.
+- Parsed-but-unstreamed torrents are evicted after 15 min; server shutdown is timeout-guarded; progress persists every 10s instead of every tick.
+- `TorrentHeader` is memoized on display-rounded fields so the 1s broadcast doesn't re-render every card.
+- Unit tests: `npm test` (`node --test test/`).
 
 ---
 
@@ -220,6 +237,9 @@ Nexus-Windows-Torrent-Downloader/
 | `stream-get-status` | Renderer → Main (Invoke) | None | Retrieves real-time streaming bandwidth, peers, and buffer progress |
 | `stream-open-external` | Renderer → Main (Invoke) | `url: string` | Opens streaming URL in external player (e.g., VLC) |
 | `stream-promote-to-download` | Renderer → Main (Invoke) | `{ destinationPath: string }` | Converts live stream torrent into permanent background download |
+| `set-torrent-strategy` | Renderer → Main (Invoke) | `infoHash: string, strategy: 'sequential' \| 'rarest'` | Switches per-torrent piece selection strategy (persisted) |
+| `search-torrents` | Renderer → Main (Invoke) | `{ query: string, provider: 'apibay' \| 'yts' }` | Searches public indexes, returns name/size/seeders/magnet rows |
+| `get-lan-ip` | Renderer → Main (Invoke) | None | Returns first external IPv4 for other-device stream playback |
 
 ---
 
@@ -236,6 +256,9 @@ npm install
 
 # 2. Run in Development Mode (Vite dev server + Electron HMR)
 npm run dev
+
+# 3. Run unit tests (Range parser, path containment)
+npm test
 
 # 3. Build Bundles
 npm run build

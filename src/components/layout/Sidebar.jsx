@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTheme } from '../../contexts/ThemeProvider';
-import { LayoutDashboard, ArrowDownUp, Film, Settings, Activity, Sun, Moon } from 'lucide-react';
+import { LayoutDashboard, ArrowDownUp, Film, Settings, Activity, Sun, Moon, Search } from 'lucide-react';
 import clsx from 'clsx';
 
 const NavItem = ({ icon: Icon, label, active, onClick }) => (
@@ -74,6 +74,12 @@ const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSp
                     label="Stream Video"
                     active={activeTab === 'stream'}
                     onClick={() => setActiveTab('stream')}
+                />
+                <NavItem
+                    icon={Search}
+                    label="Search"
+                    active={activeTab === 'search'}
+                    onClick={() => setActiveTab('search')}
                 />
                 <NavItem
                     icon={Settings}

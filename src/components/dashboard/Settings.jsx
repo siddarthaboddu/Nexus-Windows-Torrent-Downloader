@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useTheme } from '../../contexts/ThemeProvider';
-import { Folder, Moon, Sun, Monitor, ArrowDown, Shield, RefreshCw, Bell, Volume2, Play } from 'lucide-react';
+import { Folder, Moon, Sun, Monitor, ArrowDown, Shield, RefreshCw, Bell, Volume2, Play, Upload, Timer, FolderSearch, Archive, Wifi } from 'lucide-react';
 import clsx from 'clsx';
 
 const Settings = () => {
@@ -34,7 +34,13 @@ const Settings = () => {
                 enableNotifications: cfg.enableNotifications !== false, // Default true
                 enableSound: cfg.enableSound !== false, // Default true
                 compactMode: cfg.compactMode,
-                showSpeedInTray: cfg.showSpeedInTray
+                showSpeedInTray: cfg.showSpeedInTray,
+                seedRatioLimit: cfg.seedRatioLimit || 0,
+                seedTimeLimitMin: cfg.seedTimeLimitMin || 0,
+                speedSchedule: cfg.speedSchedule || { enabled: false, start: '22:00', end: '08:00', dlKB: 0, ulKB: 0 },
+                watchFolder: cfg.watchFolder || '',
+                moveCompletedTo: cfg.moveCompletedTo || '',
+                lanSharing: !!cfg.lanSharing
             });
         } catch (e) {
             console.error('Failed to load settings:', e);
@@ -51,6 +57,28 @@ const Settings = () => {
             }
         } catch (e) {
             console.error('Failed to select folder:', e);
+        }
+    };
+
+    const handleSelectWatchFolder = async () => {
+        try {
+            const folder = await window.ipcRenderer.invoke('select-folder');
+            if (folder) {
+                updateConfig({ watchFolder: folder });
+            }
+        } catch (e) {
+            console.error('Failed to select watch folder:', e);
+        }
+    };
+
+    const handleSelectCompletedFolder = async () => {
+        try {
+            const folder = await window.ipcRenderer.invoke('select-folder');
+            if (folder) {
+                updateConfig({ moveCompletedTo: folder });
+            }
+        } catch (e) {
+            console.error('Failed to select completed folder:', e);
         }
     };
 
@@ -90,6 +118,52 @@ const Settings = () => {
                     >
                         Change
                     </button>
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                    <FolderSearch size={16} className="text-sky-500 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground">Watch Folder <span className="text-xs text-muted-foreground font-normal">— auto-add dropped .torrent files</span></p>
+                        <p className="text-xs text-muted-foreground font-mono truncate">{config.watchFolder || 'Off'}</p>
+                    </div>
+                    {config.watchFolder ? (
+                        <button
+                            onClick={() => updateConfig({ watchFolder: '' })}
+                            className="px-3 py-1.5 bg-secondary hover:bg-secondary/80 text-foreground text-xs font-medium rounded-lg transition-colors"
+                        >
+                            Disable
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleSelectWatchFolder}
+                            className="px-3 py-1.5 bg-secondary hover:bg-secondary/80 text-foreground text-xs font-medium rounded-lg transition-colors"
+                        >
+                            Choose
+                        </button>
+                    )}
+                </div>
+
+                <div className="flex items-center gap-3">
+                    <Archive size={16} className="text-amber-500 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground">Completed Folder <span className="text-xs text-muted-foreground font-normal">— move finished downloads here</span></p>
+                        <p className="text-xs text-muted-foreground font-mono truncate">{config.moveCompletedTo || 'Off'}</p>
+                    </div>
+                    {config.moveCompletedTo ? (
+                        <button
+                            onClick={() => updateConfig({ moveCompletedTo: '' })}
+                            className="px-3 py-1.5 bg-secondary hover:bg-secondary/80 text-foreground text-xs font-medium rounded-lg transition-colors"
+                        >
+                            Disable
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleSelectCompletedFolder}
+                            className="px-3 py-1.5 bg-secondary hover:bg-secondary/80 text-foreground text-xs font-medium rounded-lg transition-colors"
+                        >
+                            Choose
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -219,6 +293,22 @@ const Settings = () => {
                             <p className="text-xs text-muted-foreground mt-2">
                                 Changing the port will restart the connection engine.
                             </p>
+                        </div>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 bg-secondary/20 rounded-xl border border-border/50">
+                        <div className="flex items-center gap-2">
+                            <Wifi size={16} className="text-muted-foreground" />
+                            <div>
+                                <p className="text-sm font-medium text-foreground">LAN Sharing</p>
+                                <p className="text-xs text-muted-foreground">Let phones, TVs and PCs on your network reach active streams. Applies to the next stream.</p>
+                            </div>
+                        </div>
+                        <div
+                            onClick={() => updateConfig({ lanSharing: !config.lanSharing })}
+                            className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.lanSharing ? "bg-primary" : "bg-secondary")}
+                        >
+                            <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.lanSharing ? "translate-x-6" : "translate-x-0")} />
                         </div>
                     </div>
                 </div>
@@ -370,6 +460,140 @@ const Settings = () => {
                         className="px-6 py-2 bg-primary hover:bg-primary/90 text-white font-medium rounded-lg transition-colors shadow-lg shadow-blue-500/20"
                     >
                         Save Limits
+                    </button>
+                </div>
+            </div>
+
+            {/* Speed Scheduler */}
+            <div className="glass-panel p-6 rounded-2xl space-y-4">
+                <div className="flex items-center gap-3 text-white mb-2">
+                    <div className="p-1 bg-sky-500/10 rounded">
+                        <Timer className="text-sky-500" size={20} />
+                    </div>
+                    <h3 className="text-lg font-semibold">Speed Scheduler</h3>
+                </div>
+                <div className="flex items-center justify-between p-3 bg-secondary/20 rounded-xl border border-border/50">
+                    <div>
+                        <p className="text-sm font-medium text-foreground">Scheduled Caps</p>
+                        <p className="text-xs text-muted-foreground">Apply different limits during a daily window (e.g. capped daytime, unlimited overnight).</p>
+                    </div>
+                    <div
+                        onClick={() => updateConfig({ speedSchedule: { ...(config.speedSchedule || {}), enabled: !(config.speedSchedule?.enabled) } })}
+                        className={clsx("w-12 h-6 rounded-full p-1 cursor-pointer transition-colors relative", config.speedSchedule?.enabled ? "bg-primary" : "bg-secondary")}
+                    >
+                        <div className={clsx("w-4 h-4 rounded-full bg-white shadow-sm transition-transform", config.speedSchedule?.enabled ? "translate-x-6" : "translate-x-0")} />
+                    </div>
+                </div>
+
+                {config.speedSchedule?.enabled && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">From</label>
+                            <input
+                                type="time"
+                                value={config.speedSchedule?.start || '22:00'}
+                                onChange={(e) => setConfig({ ...config, speedSchedule: { ...config.speedSchedule, start: e.target.value } })}
+                                className="w-full bg-secondary/50 border border-border/50 rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">To</label>
+                            <input
+                                type="time"
+                                value={config.speedSchedule?.end || '08:00'}
+                                onChange={(e) => setConfig({ ...config, speedSchedule: { ...config.speedSchedule, end: e.target.value } })}
+                                className="w-full bg-secondary/50 border border-border/50 rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">Down (KB/s)</label>
+                            <input
+                                type="number"
+                                min="0"
+                                placeholder="0 = Unlimited"
+                                value={config.speedSchedule?.dlKB || ''}
+                                onChange={(e) => setConfig({ ...config, speedSchedule: { ...config.speedSchedule, dlKB: Math.max(0, Number(e.target.value)) || 0 } })}
+                                className="w-full bg-secondary/50 border border-border/50 rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium text-muted-foreground">Up (KB/s)</label>
+                            <input
+                                type="number"
+                                min="0"
+                                placeholder="0 = Unlimited"
+                                value={config.speedSchedule?.ulKB || ''}
+                                onChange={(e) => setConfig({ ...config, speedSchedule: { ...config.speedSchedule, ulKB: Math.max(0, Number(e.target.value)) || 0 } })}
+                                className="w-full bg-secondary/50 border border-border/50 rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {config.speedSchedule?.enabled && (
+                    <div className="flex justify-end pt-2">
+                        <button
+                            onClick={() => updateConfig({ speedSchedule: config.speedSchedule })}
+                            className="px-6 py-2 bg-primary hover:bg-primary/90 text-white font-medium rounded-lg transition-colors shadow-lg shadow-blue-500/20"
+                        >
+                            Save Schedule
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            {/* Seeding Goals */}
+            <div className="glass-panel p-6 rounded-2xl space-y-4">
+                <div className="flex items-center gap-3 text-white mb-2">
+                    <div className="p-1 bg-emerald-500/10 rounded">
+                        <Upload className="text-emerald-500" size={20} />
+                    </div>
+                    <h3 className="text-lg font-semibold">Seeding Goals</h3>
+                </div>
+                <p className="text-sm text-muted-foreground">Auto-pause finished torrents once a goal is met (0 = off).</p>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                            Target Ratio
+                        </label>
+                        <input
+                            type="number"
+                            min="0"
+                            step="0.1"
+                            placeholder="e.g. 2.0"
+                            value={config.seedRatioLimit > 0 ? config.seedRatioLimit : ''}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                setConfig({ ...config, seedRatioLimit: val === '' ? 0 : Math.max(0, Number(val)) });
+                            }}
+                            className="w-full bg-secondary/50 border border-border/50 rounded-lg px-4 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                            Seed Time <span className="text-xs opacity-50">(minutes)</span>
+                        </label>
+                        <input
+                            type="number"
+                            min="0"
+                            placeholder="e.g. 1440"
+                            value={config.seedTimeLimitMin > 0 ? config.seedTimeLimitMin : ''}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                setConfig({ ...config, seedTimeLimitMin: val === '' ? 0 : Math.max(0, Math.round(Number(val))) });
+                            }}
+                            className="w-full bg-secondary/50 border border-border/50 rounded-lg px-4 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
+                        />
+                    </div>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                    <button
+                        onClick={() => updateConfig({ seedRatioLimit: Number(config.seedRatioLimit) || 0, seedTimeLimitMin: Number(config.seedTimeLimitMin) || 0 })}
+                        className="px-6 py-2 bg-primary hover:bg-primary/90 text-white font-medium rounded-lg transition-colors shadow-lg shadow-blue-500/20"
+                    >
+                        Save Goals
                     </button>
                 </div>
             </div>

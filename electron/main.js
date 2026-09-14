@@ -4,6 +4,8 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
+import checkDiskSpace from 'check-disk-space'
+import { resolveWithinRoot } from './utils/safePath.js'
 import { StreamManager } from './utils/StreamManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -112,6 +114,19 @@ const SAVE_THROTTLE = 2000 // 2 seconds
 // Power Save Blocker ID
 let powerSaveId = null
 
+// Speed-schedule state: true while the scheduled cap window is applied
+let scheduleActive = false
+
+// Re-verify operations in flight (double-click guard)
+const pendingReverify = new Set()
+
+// Extract a btih hash from a magnet link, if present
+function extractBtih(source) {
+  if (typeof source !== 'string') return null
+  const m = source.match(/xt=urn:btih:([a-zA-Z0-9]+)/i)
+  return m ? m[1].toLowerCase() : null
+}
+
 function updatePowerSaveBlocker() {
   const isDownloading = client && client.torrents.some(t => !t.done && t.progress < 1 && !t.paused)
   // Only block power save if downloading AND insomnia mode is enabled
@@ -199,6 +214,374 @@ async function loadConfig() {
 }
 
 
+// Shared add flow used by the add-torrent handler, watch-folder importer, and
+// stream promote-to-download. Resolves once metadata is ready.
+async function addTorrentBySource(torrentId, downloadDir) {
+  if (!client) await initWebTorrent()
+
+  // Robust file handling: If Uint8Array or Buffer, wrap in Buffer. If file path, read it to buffer.
+  let torrentSource = torrentId;
+  if (torrentId instanceof Uint8Array || Buffer.isBuffer(torrentId)) {
+    torrentSource = Buffer.from(torrentId);
+  } else if (typeof torrentId === 'string' && (torrentId.endsWith('.torrent') || torrentId.includes(path.sep))) {
+    try {
+      // Try to read it as a file
+      const buffer = await fs.readFile(torrentId);
+      console.log('[DEBUG] Read file to buffer, size:', buffer.length);
+      torrentSource = buffer;
+    } catch (e) {
+      // If read fails, assume it might be a magnet or URL, proceed with original string
+      console.warn('[WARN] Failed to read torrent file path, using raw string:', e);
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    // Metadata may never arrive for a dead magnet: stop the promise hanging
+    // forever (the Add dialog "Starting..." state).
+    const METADATA_TIMEOUT_MS = 120000
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try { client.remove(torrentSource, () => { }) } catch { }
+      reject(new Error('Timed out waiting for torrent metadata. Check the magnet/peers and retry.'))
+    }, METADATA_TIMEOUT_MS)
+    try { timer.unref?.() } catch { }
+    const safeResolve = (v) => { if (settled) return; settled = true; clearTimeout(timer); resolve(v) }
+    const safeReject = (e) => { if (settled) return; settled = true; clearTimeout(timer); reject(e) }
+    try {
+      console.log('[DEBUG] Calling client.add with type:', typeof torrentSource, Buffer.isBuffer(torrentSource) ? 'Buffer' : 'String');
+
+      // Dedup: a magnet for an already-active torrent resolves to the live one
+      const preHash = extractBtih(torrentSource)
+      if (preHash) {
+        const dupe = client.get(preHash)
+        if (dupe) {
+          const dupeHash = (dupe.infoHash || '').toLowerCase()
+          if (!managedTorrents.find(t => (t.infoHash || '').toLowerCase() === dupeHash)) {
+            managedTorrents.push({
+              infoHash: dupeHash,
+              magnetURI: dupe.magnetURI,
+              path: downloadDir,
+              paused: false,
+              name: dupe.name,
+              deselectedFiles: [],
+              strategy: 'sequential',
+              baseUploaded: 0,
+              baseDownloaded: 0,
+              totalUploaded: 0,
+              totalDownloaded: 0,
+              ratio: 0
+            })
+            saveTorrentsState()
+          }
+          setupTorrentEventListeners(dupe)
+          safeResolve({ infoHash: dupeHash, name: dupe.name, magnetURI: dupe.magnetURI })
+          return
+        }
+      }
+
+      // Add to WebTorrent
+      client.add(torrentSource, { path: downloadDir }, async (torrent) => {
+        try {
+          const normHash = (torrent.infoHash || '').toLowerCase();
+
+          // Disk-space pre-check now that the real payload size is known
+          const need = torrent.length || 0
+          if (need > 0) {
+            try {
+              const { free } = await checkDiskSpace(downloadDir)
+              if (free < need) {
+                try { client.remove(torrent, () => { }) } catch { }
+                throw new Error(`Not enough disk space: need ${formatBytes(need)}, only ${formatBytes(free)} free on the destination drive.`)
+              }
+            } catch (e) {
+              if (/Not enough disk space/.test(e.message || '')) {
+                safeReject(e)
+                return
+              }
+              console.warn('[DiskCheck] Skipped pre-check:', e.message)
+            }
+          }
+
+          // Add to managed state
+          const exists = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === normHash)
+          if (!exists) {
+            managedTorrents.push({
+              infoHash: normHash,
+              magnetURI: torrent.magnetURI,
+              path: downloadDir,
+              paused: false,
+              name: torrent.name,
+              deselectedFiles: [],
+              strategy: 'sequential',
+              baseUploaded: 0,
+              baseDownloaded: 0,
+              totalUploaded: 0,
+              totalDownloaded: 0,
+              ratio: 0
+            })
+            saveTorrentsState()
+          } else if (exists.strategy) {
+            try { torrent.strategy = exists.strategy } catch { }
+          }
+
+          setupTorrentEventListeners(torrent)
+
+          safeResolve({
+            infoHash: normHash,
+            name: torrent.name,
+            magnetURI: torrent.magnetURI
+          })
+        } catch (e) {
+          safeReject(e)
+        }
+      })
+    } catch (err) {
+      console.error('Failed to add torrent:', err)
+      safeReject(err)
+    }
+  })
+}
+
+function notifyUser(title, body, withSound = false) {
+  try {
+    if (appConfig.enableNotifications === false) return
+    new Notification({ title, body, silent: !withSound }).show()
+    if (withSound && appConfig.enableSound !== false) shell.beep()
+  } catch (e) {
+    console.warn('[Notify]', e.message)
+  }
+}
+
+// Auto-pause seeding torrents once the configured ratio or seed-time goal is met.
+// completedAt is stamped on first sight of a finished torrent so enabling a goal
+// later starts counting from that moment.
+function checkSeedingGoals() {
+  if (!client) return
+  const ratioLimit = Number(appConfig.seedRatioLimit) || 0
+  const timeLimitMin = Number(appConfig.seedTimeLimitMin) || 0
+  if (ratioLimit <= 0 && timeLimitMin <= 0) return
+
+  const now = Date.now()
+  let changed = false
+
+  client.torrents.forEach(t => {
+    const tHash = (t.infoHash || '').toLowerCase()
+    const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === tHash)
+    if (!managed || managed.paused) return
+    if (!t.done && t.progress < 1) return
+
+    if (!managed.completedAt) {
+      managed.completedAt = now
+      changed = true
+      return
+    }
+
+    const baseUp = managed.baseUploaded || 0
+    const lifetimeUploaded = baseUp + (t.uploaded || 0)
+    const targetLength = t.length || managed.length || 0
+    const lifetimeDownloaded = targetLength > 0 ? targetLength : (t.downloaded || 0)
+    const ratio = lifetimeDownloaded > 0 ? (lifetimeUploaded / lifetimeDownloaded) : 0
+    const seededMin = (now - managed.completedAt) / 60000
+
+    const hit = (ratioLimit > 0 && ratio >= ratioLimit) ||
+      (timeLimitMin > 0 && seededMin >= timeLimitMin)
+    if (!hit) return
+
+    // Mirror pause-torrent accounting, then drop from the swarm
+    managed.totalUploaded = lifetimeUploaded
+    managed.baseUploaded = lifetimeUploaded
+    managed.done = true
+    managed.progress = 1
+    managed.downloaded = targetLength || managed.downloaded || 0
+    managed.totalDownloaded = Math.max(managed.totalDownloaded || 0, targetLength)
+    managed.baseDownloaded = managed.totalDownloaded
+    managed.ratio = ratio
+    managed.length = targetLength
+    managed.paused = true
+    changed = true
+
+    try { client.remove(tHash, () => { }) } catch { }
+    console.log(`[SeedingGoal] Auto-paused ${managed.name} (ratio ${ratio.toFixed(2)}, seeded ${Math.round(seededMin)}m)`)
+    notifyUser('Seeding goal reached', `${managed.name || 'Torrent'} paused at ratio ${ratio.toFixed(2)}.`)
+  })
+
+  if (changed) saveTorrentsState()
+}
+
+function applyConfiguredLimits() {
+  if (!client) return
+  const dl = Number(appConfig.downloadLimit) || 0
+  const ul = Number(appConfig.uploadLimit) || 0
+  try {
+    client.throttleDownload(dl > 0 ? dl : -1)
+    client.throttleUpload(ul > 0 ? ul : -1)
+  } catch (e) {
+    console.warn('[Scheduler] Failed to apply limits:', e.message)
+  }
+}
+
+function toMinutes(str) {
+  const m = String(str || '').match(/^(\d{1,2}):(\d{2})$/)
+  if (!m) return null
+  return Math.min(23, parseInt(m[1], 10)) * 60 + Math.min(59, parseInt(m[2], 10))
+}
+
+// Flip between scheduled caps and configured limits as the time window opens/closes.
+// Supports overnight windows (e.g. 22:00 -> 08:00).
+function evaluateSpeedSchedule() {
+  const s = appConfig.speedSchedule
+  if (!s || !s.enabled) {
+    if (scheduleActive) {
+      scheduleActive = false
+      applyConfiguredLimits()
+      console.log('[Scheduler] Schedule disabled, restored configured limits')
+    }
+    return
+  }
+  const start = toMinutes(s.start)
+  const end = toMinutes(s.end)
+  if (start === null || end === null || start === end) return
+
+  const now = new Date()
+  const cur = now.getHours() * 60 + now.getMinutes()
+  const inWindow = start < end ? (cur >= start && cur < end) : (cur >= start || cur < end)
+
+  if (inWindow && !scheduleActive) {
+    scheduleActive = true
+    if (!client) return
+    const dl = Number(s.dlKB) || 0
+    const ul = Number(s.ulKB) || 0
+    try {
+      client.throttleDownload(dl > 0 ? dl * 1024 : -1)
+      client.throttleUpload(ul > 0 ? ul * 1024 : -1)
+      console.log('[Scheduler] Capped window active')
+    } catch (e) {
+      console.warn('[Scheduler]', e.message)
+    }
+  } else if (!inWindow && scheduleActive) {
+    scheduleActive = false
+    applyConfiguredLimits()
+    console.log('[Scheduler] Window ended, restored configured limits')
+  }
+}
+
+// Watch-folder auto-add (.torrent drop-in directory)
+let watchFolderWatcher = null
+const watchFileTimers = new Map()
+
+function stopWatchFolder() {
+  try { watchFolderWatcher?.close() } catch { }
+  watchFolderWatcher = null
+  watchFileTimers.forEach(t => clearTimeout(t))
+  watchFileTimers.clear()
+}
+
+async function importWatchFile(fullPath, watchFolder) {
+  try {
+    const st = await fs.stat(fullPath).catch(() => null)
+    if (!st || !st.isFile()) return
+    // Stable-size check: skip files that are still being written
+    await new Promise(r => setTimeout(r, 1200))
+    const st2 = await fs.stat(fullPath).catch(() => null)
+    if (!st2 || st2.size !== st.size) {
+      scheduleWatchFile(fullPath, watchFolder)
+      return
+    }
+    const buffer = await fs.readFile(fullPath)
+    const downloadDir = await getLastDownloadPath()
+    const result = await addTorrentBySource(buffer, downloadDir)
+    console.log(`[WatchFolder] Auto-added ${result.name}`)
+    notifyUser('Torrent added', `${result.name || 'Torrent'} was picked up from the watch folder.`)
+    // Archive the processed file so it is not re-added on restart
+    try {
+      const processedDir = path.join(watchFolder, 'processed')
+      await fs.mkdir(processedDir, { recursive: true })
+      await fs.rename(fullPath, path.join(processedDir, path.basename(fullPath)))
+    } catch (e) {
+      console.warn('[WatchFolder] Could not archive file:', e.message)
+    }
+  } catch (e) {
+    console.warn('[WatchFolder] Failed to import', fullPath, e.message)
+  }
+}
+
+function scheduleWatchFile(fullPath, watchFolder) {
+  if (!fullPath.toLowerCase().endsWith('.torrent')) return
+  if (watchFileTimers.has(fullPath)) return
+  const timer = setTimeout(() => {
+    watchFileTimers.delete(fullPath)
+    importWatchFile(fullPath, watchFolder)
+  }, 2000)
+  watchFileTimers.set(fullPath, timer)
+}
+
+function startWatchFolder() {
+  stopWatchFolder()
+  const folder = appConfig.watchFolder
+  if (!folder || !fsSync.existsSync(folder)) return
+  // Import any .torrent files already waiting in the folder
+  fs.readdir(folder).then(files => {
+    files.filter(f => f.toLowerCase().endsWith('.torrent'))
+      .forEach(f => scheduleWatchFile(path.join(folder, f), folder))
+  }).catch(() => { })
+  try {
+    watchFolderWatcher = fsSync.watch(folder, (eventType, filename) => {
+      if (!filename) return
+      scheduleWatchFile(path.join(folder, filename), folder)
+    })
+    watchFolderWatcher.on('error', (e) => console.warn('[WatchFolder] Watcher error:', e.message))
+    console.log(`[WatchFolder] Watching ${folder}`)
+  } catch (e) {
+    console.warn('[WatchFolder] Failed to start:', e.message)
+  }
+}
+
+// Move a finished payload to the "completed" folder ( if configured ), then
+// resume seeding from the new location. Guarded so repeat done-events are no-ops.
+async function maybeMoveCompleted(torrent) {
+  const destRoot = appConfig.moveCompletedTo
+  if (!destRoot) return
+  const normHash = (torrent.infoHash || '').toLowerCase()
+  const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === normHash)
+  const currentDir = managed?.path || torrent.path
+  if (!currentDir) return
+  if (path.resolve(currentDir) === path.resolve(destRoot)) return // already home
+  const name = torrent.name || managed?.name
+  if (!name) return
+  const srcFull = path.join(currentDir, name)
+  if (!fsSync.existsSync(srcFull)) return
+  let destFull = path.join(destRoot, name)
+  if (fsSync.existsSync(destFull)) {
+    destFull = path.join(destRoot, `${name} [${normHash.slice(0, 6)}]`)
+    if (fsSync.existsSync(destFull)) return // avoid clobbering an existing payload
+  }
+  // Drop from the swarm while files move
+  try {
+    await new Promise(res => {
+      try { client.remove(normHash, () => res()) } catch { res() }
+    })
+  } catch { }
+  await fs.mkdir(destRoot, { recursive: true })
+  await fs.rename(srcFull, destFull)
+  if (managed) {
+    managed.path = destRoot
+    saveTorrentsState()
+  }
+  console.log(`[MoveComplete] Moved ${name} to ${destRoot}`)
+  notifyUser('Download moved', `${name} was moved to the completed folder.`)
+  if (client && managed && !managed.paused) {
+    try {
+      client.add(managed.magnetURI, { path: destRoot, strategy: managed.strategy || 'sequential' }, (t) => {
+        setupTorrentEventListeners(t)
+      })
+    } catch (e) {
+      console.warn('[MoveComplete] Re-seed failed:', e.message)
+    }
+  }
+}
+
 function setupIpcHandlers() {
   ipcMain.handle('select-folder', async () => {
     const defaultPath = await getLastDownloadPath()
@@ -236,61 +619,7 @@ function setupIpcHandlers() {
     // Save as new default
     await saveLastDownloadPath(downloadDir)
 
-    // Robust file handling: If Uint8Array or Buffer, wrap in Buffer. If file path, read it to buffer.
-    let torrentSource = torrentId;
-    if (torrentId instanceof Uint8Array || Buffer.isBuffer(torrentId)) {
-      torrentSource = Buffer.from(torrentId);
-    } else if (typeof torrentId === 'string' && (torrentId.endsWith('.torrent') || torrentId.includes(path.sep))) {
-      try {
-        // Try to read it as a file
-        const buffer = await fs.readFile(torrentId);
-        console.log('[DEBUG] Read file to buffer, size:', buffer.length);
-        torrentSource = buffer;
-      } catch (e) {
-        // If read fails, assume it might be a magnet or URL, proceed with original string
-        console.warn('[WARN] Failed to read torrent file path, using raw string:', e);
-      }
-    }
-
-    return new Promise((resolve, reject) => {
-      try {
-        console.log('[DEBUG] Calling client.add with type:', typeof torrentSource, Buffer.isBuffer(torrentSource) ? 'Buffer' : 'String');
-
-        // Add to WebTorrent
-        client.add(torrentSource, { path: downloadDir }, (torrent) => {
-          const normHash = (torrent.infoHash || '').toLowerCase();
-          // Add to managed state
-          const exists = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === normHash)
-          if (!exists) {
-            managedTorrents.push({
-              infoHash: normHash,
-              magnetURI: torrent.magnetURI,
-              path: downloadDir,
-              paused: false,
-              name: torrent.name,
-              deselectedFiles: [],
-              baseUploaded: 0,
-              baseDownloaded: 0,
-              totalUploaded: 0,
-              totalDownloaded: 0,
-              ratio: 0
-            })
-            saveTorrentsState()
-          }
-
-          setupTorrentEventListeners(torrent)
-
-          resolve({
-            infoHash: normHash,
-            name: torrent.name,
-            magnetURI: torrent.magnetURI
-          })
-        })
-      } catch (err) {
-        console.error('Failed to add torrent:', err)
-        reject(err)
-      }
-    })
+    return addTorrentBySource(torrentId, downloadDir)
   })
 
   function openTorrentFolderInternal(infoHash) {
@@ -357,6 +686,13 @@ function setupIpcHandlers() {
     // Normalize separators
     const cleanRelative = (relativePath || '').replace(/[/\\]+/g, path.sep).replace(/^[\\/]+/, '');
 
+    // Containment root: renderer-supplied paths must never escape the download dir
+    const containedRoot = path.resolve(torrentPath);
+    const isContained = (p) => {
+      const r = path.resolve(p);
+      return r === containedRoot || r.startsWith(containedRoot + path.sep);
+    };
+
     if (!cleanRelative) {
       const candidate = torrentName ? path.join(torrentPath, torrentName) : torrentPath;
       const exists = fsSync.existsSync(candidate);
@@ -377,6 +713,7 @@ function setupIpcHandlers() {
     ].filter(Boolean);
 
     for (const cand of candidates) {
+      if (!isContained(cand)) continue;
       if (fsSync.existsSync(cand)) {
         let isDir = false;
         try { isDir = fsSync.statSync(cand).isDirectory(); } catch { }
@@ -384,10 +721,11 @@ function setupIpcHandlers() {
       }
     }
 
-    // If none exist yet, choose best target path
-    const fallback = (torrentName && !cleanRelative.toLowerCase().startsWith(torrentName.toLowerCase()))
+    // If none exist yet, choose best target path (clamped inside the download dir)
+    let fallback = (torrentName && !cleanRelative.toLowerCase().startsWith(torrentName.toLowerCase()))
       ? path.join(torrentPath, torrentName, cleanRelative)
       : path.join(torrentPath, cleanRelative);
+    if (!isContained(fallback)) fallback = torrentPath;
 
     return { targetPath: fallback, torrentPath, exists: false, isDirectory: false };
   }
@@ -682,6 +1020,11 @@ function setupIpcHandlers() {
         }
       }
 
+      // Restart the watch-folder watcher when its path changes
+      if (newConfig.watchFolder !== undefined && newConfig.watchFolder !== config.watchFolder) {
+        setTimeout(() => { try { startWatchFolder() } catch (e) { console.warn('[WatchFolder]', e.message) } }, 500)
+      }
+
       // Apply Start with Windows setting
       if (typeof newConfig.startWithWindows === 'boolean') {
         console.log('[Config] Setting auto-launch:', newConfig.startWithWindows)
@@ -697,6 +1040,16 @@ function setupIpcHandlers() {
       if (win) {
         win.webContents.send('config-updated', updated)
       }
+
+      // Re-evaluate the speed schedule against the new config
+      try { evaluateSpeedSchedule() } catch (e) { console.warn('[Scheduler]', e.message) }
+
+      // Apply LAN-sharing bind for future streams
+      try {
+        if (streamManager && newConfig.lanSharing !== undefined) {
+          streamManager.setLanSharing(!!newConfig.lanSharing)
+        }
+      } catch (e) { console.warn('[StreamManager]', e.message) }
 
       return updated
     } catch (e) {
@@ -749,6 +1102,7 @@ function setupIpcHandlers() {
           uploaded: lifetimeUploaded,
           state: isDone ? 'Seeding' : 'Downloading',
           paused: false,
+          strategy: managed?.strategy || 'sequential',
           files: filesMapped
         })
       })
@@ -785,6 +1139,7 @@ function setupIpcHandlers() {
           uploaded: pTotalUp,
           state: (managed.done || managed.progress >= 1) ? 'Completed' : 'Paused',
           paused: true,
+          strategy: managed.strategy || 'sequential',
           done: managed.done || managed.progress >= 1,
           files: (managed.files || []).map((f, idx) => ({
             ...f,
@@ -808,9 +1163,11 @@ function setupIpcHandlers() {
     }
 
     if (client) {
-      // Remove from client
+      // Await removal so managed-state and disk work cannot race it
       try {
-        client.remove(targetHash, () => { })
+        await new Promise((res) => {
+          try { client.remove(targetHash, () => res()) } catch { res() }
+        })
       } catch (e) { }
     }
 
@@ -825,9 +1182,10 @@ function setupIpcHandlers() {
         // If multi-file: path/name/
         // If single-file: path/name
         // t.path stored in managed state is the download destination directory.
-
-        const fullPath = path.join(t.path, t.name)
-        if (path.resolve(fullPath) !== path.resolve(t.path)) {
+        // Containment: never delete outside the download directory, even for
+        // hostile torrent names.
+        const fullPath = resolveWithinRoot(t.path, t.name)
+        if (fullPath && path.resolve(fullPath) !== path.resolve(t.path)) {
           await fs.rm(fullPath, { recursive: true, force: true })
         }
       } catch (e) {
@@ -890,12 +1248,18 @@ function setupIpcHandlers() {
     const targetHash = (infoHash || '').toLowerCase()
     const t = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
     if (t) {
+      // Dedup: already in the swarm (double-click guard) — just unpause state
+      if (client.get(targetHash)) {
+        t.paused = false
+        saveTorrentsState()
+        return
+      }
       // Re-anchor base stats so session addition is correct
       t.baseUploaded = t.totalUploaded || t.baseUploaded || 0
       t.baseDownloaded = t.totalDownloaded || t.baseDownloaded || 0
 
       // Re-add to WebTorrent
-      client.add(t.magnetURI, { path: t.path }, (torrent) => {
+      client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
         setupTorrentEventListeners(torrent)
       })
       t.paused = false
@@ -949,6 +1313,26 @@ function setupIpcHandlers() {
     return applyToggleFileSelection(infoHash, fileIndexOrIndices, selected)
   })
 
+  ipcMain.handle('set-torrent-strategy', async (event, infoHash, strategy) => {
+    const allowed = ['sequential', 'rarest']
+    if (!allowed.includes(strategy)) throw new Error('Invalid download strategy')
+    const targetHash = (infoHash || '').toLowerCase()
+    const managed = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
+    if (managed) {
+      managed.strategy = strategy
+      saveTorrentsState()
+    }
+    if (client) {
+      const active = client.get(targetHash)
+      if (active) {
+        try { active.strategy = strategy } catch (e) {
+          console.warn('[Strategy] Failed to apply:', e.message)
+        }
+      }
+    }
+    return { success: true, strategy }
+  })
+
   ipcMain.handle('play-sound', () => {
     shell.beep()
   })
@@ -973,6 +1357,9 @@ function setupIpcHandlers() {
     const targetHash = (infoHash || '').toLowerCase()
     const t = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === targetHash)
     if (t) {
+      // Double-invocation guard: a re-check is already running
+      if (pendingReverify.has(targetHash)) return
+      pendingReverify.add(targetHash)
       console.log(`[Reverify] Force re-checking ${t.name}...`)
 
       // Remove from active client first (keeping data)
@@ -982,9 +1369,10 @@ function setupIpcHandlers() {
           // Once removed, immediately re-add to force hashing
           // Ensure we set paused=false
           t.paused = false
-          client.add(t.magnetURI, { path: t.path }, (torrent) => {
+          client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
             console.log(`[Reverify] Started re-check for ${torrent.name}`)
             setupTorrentEventListeners(torrent)
+            pendingReverify.delete(targetHash)
           })
           saveTorrentsState()
         })
@@ -1028,10 +1416,15 @@ function setupIpcHandlers() {
     if (!client) return false
     managedTorrents.forEach(t => {
       if (t.paused) {
+        // Dedup: already in the swarm — just flip state, don't re-add
+        if (client.get((t.infoHash || '').toLowerCase())) {
+          t.paused = false
+          return
+        }
         t.baseUploaded = t.totalUploaded || t.baseUploaded || 0
         t.baseDownloaded = t.totalDownloaded || t.baseDownloaded || 0
         try {
-          client.add(t.magnetURI, { path: t.path }, (torrent) => {
+          client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
             setupTorrentEventListeners(torrent)
           })
         } catch { }
@@ -1068,10 +1461,13 @@ function setupIpcHandlers() {
   })
 
   ipcMain.handle('stream-open-external', async (event, url) => {
-    if (url) {
+    // Allowlist http(s) only: the renderer must not be able to launch
+    // arbitrary protocols (file:, magnet:, ms-*, ...) on this PC.
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
       await shell.openExternal(url)
       return { success: true }
     }
+    console.warn('[Security] Blocked open-external for non-http URL')
     return { success: false }
   })
 
@@ -1080,8 +1476,14 @@ function setupIpcHandlers() {
     const info = await streamManager.promoteToDownload(destinationPath)
     if (!client) await initWebTorrent()
 
+    // Dedup: already downloading/seeding — nothing to do
+    const existingHash = (info.infoHash || '').toLowerCase()
+    if (existingHash && client.get(existingHash)) {
+      return { success: true, infoHash: existingHash }
+    }
+
     return new Promise((resolve, _reject) => {
-      client.add(info.magnetURI, { path: destinationPath }, (torrent) => {
+      client.add(info.magnetURI, { path: destinationPath, strategy: 'sequential' }, (torrent) => {
         const normHash = (torrent.infoHash || '').toLowerCase()
         const exists = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === normHash)
         if (!exists) {
@@ -1092,6 +1494,7 @@ function setupIpcHandlers() {
             paused: false,
             name: torrent.name,
             deselectedFiles: [],
+            strategy: 'sequential',
             baseUploaded: 0,
             baseDownloaded: 0,
             totalUploaded: 0,
@@ -1104,6 +1507,104 @@ function setupIpcHandlers() {
         resolve({ success: true, infoHash: normHash })
       })
     })
+  })
+
+  // --- Built-in Torrent Search (public sources, rendered in SearchView) ---
+  const PUBLIC_TRACKERS = [
+    'udp://tracker.opentrackr.org:1337/announce',
+    'udp://open.stealth.si:80/announce',
+    'udp://tracker.torrent.eu.org:451/announce',
+    'udp://exodus.desync.com:6969/announce'
+  ]
+
+  function buildSearchMagnet(infoHash, name) {
+    const tr = PUBLIC_TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('')
+    return `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(name || infoHash)}${tr}`
+  }
+
+  function parseSizeToBytes(str) {
+    const m = String(str || '').trim().match(/^([\d.]+)\s*([KMGT]i?B|B)$/i)
+    if (!m) return 0
+    const units = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 }
+    const unit = m[2].toUpperCase().replace('IB', 'B')
+    return Math.round(parseFloat(m[1]) * (units[unit] || 0))
+  }
+
+  async function fetchJson(url, timeoutMs = 15000) {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+    try {
+      const res = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'NexusTorrent/1.0' } })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return await res.json()
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  ipcMain.handle('search-torrents', async (event, { query, provider }) => {
+    const q = String(query || '').trim()
+    if (q.length < 2) throw new Error('Enter at least 2 characters to search')
+    const prov = provider === 'yts' ? 'yts' : 'apibay'
+
+    try {
+      if (prov === 'yts') {
+        const data = await fetchJson(`https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(q)}&limit=20&sort_by=like_count&order_by=desc`)
+        const movies = data?.data?.movies || []
+        const out = []
+        movies.forEach(m => {
+          (m.torrents || []).forEach(t => {
+            if (!t.hash) return
+            const name = `${m.title_english || m.title} (${m.year}) [${t.quality}]`
+            out.push({
+              provider: 'yts',
+              name,
+              size: parseSizeToBytes(t.size),
+              sizeStr: t.size || '',
+              seeders: t.seeds || 0,
+              leechers: t.peers || 0,
+              infoHash: String(t.hash).toLowerCase(),
+              magnet: buildSearchMagnet(t.hash, name)
+            })
+          })
+        })
+        return out
+      }
+
+      const data = await fetchJson(`https://apibay.org/q.php?q=${encodeURIComponent(q)}`)
+      if (!Array.isArray(data)) return []
+      return data.slice(0, 50).map(r => {
+        const name = r.name || 'Unknown'
+        const size = Number(r.size) || 0
+        return {
+          provider: 'apibay',
+          name,
+          size,
+          sizeStr: formatBytes(size),
+          seeders: Number(r.seeders) || 0,
+          leechers: Number(r.leechers) || 0,
+          infoHash: String(r.info_hash || '').toLowerCase(),
+          magnet: buildSearchMagnet(r.info_hash, name)
+        }
+      })
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('Search timed out. Check your connection and retry.')
+      throw new Error(`Search failed: ${e.message}`)
+    }
+  })
+
+  ipcMain.handle('get-lan-ip', async () => {
+    try {
+      const ifaces = os.networkInterfaces()
+      for (const addrs of Object.values(ifaces)) {
+        for (const a of addrs || []) {
+          if (a.family === 'IPv4' && !a.internal) return a.address
+        }
+      }
+    } catch (e) {
+      console.warn('[LanIP]', e.message)
+    }
+    return null
   })
 }
 
@@ -1224,7 +1725,8 @@ app.on('before-quit', () => {
   // Snapshot active torrent metrics to managedTorrents
   if (client && client.torrents.length > 0) {
     client.torrents.forEach(t => {
-      const managed = managedTorrents.find(m => m.infoHash === t.infoHash)
+      const normHash = (t.infoHash || '').toLowerCase()
+      const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === normHash)
       if (managed) {
         const sessionUp = t.uploaded || 0
         const sessionDown = t.downloaded || 0
@@ -1289,7 +1791,7 @@ async function restoreSession() {
       // Re-add active torrents (Downloading or Seeding)
       try {
         console.log(`[Startup] Resuming: ${t.name || t.infoHash} `)
-        client.add(t.magnetURI, { path: t.path }, (torrent) => {
+        client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
           console.log(`[Startup] Active: ${torrent.name} `)
           setupTorrentEventListeners(torrent)
         })
@@ -1366,6 +1868,28 @@ app.whenReady().then(async () => {
   } catch (e) {
     console.error('[Startup] Failed to initialize WebTorrent:', e)
   }
+
+  // Apply the speed schedule ( if configured ) and re-check every 30s
+  try { evaluateSpeedSchedule() } catch (e) { console.warn('[Scheduler]', e.message) }
+  setInterval(() => {
+    try { evaluateSpeedSchedule() } catch (e) { console.warn('[Scheduler]', e.message) }
+  }, 30000)
+
+  // Persist progress every 10s instead of on every 1s UI tick (disk-friendly).
+  // Pause/remove/quit paths still save immediately.
+  setInterval(() => {
+    try {
+      if (client && client.torrents.length > 0) saveTorrentsState()
+    } catch (e) { console.warn('[Save]', e.message) }
+  }, 10000)
+
+  // Start the .torrent watch folder ( if configured )
+  try { startWatchFolder() } catch (e) { console.warn('[WatchFolder]', e.message) }
+
+  // Apply LAN-sharing bind from saved config (applies to future streams)
+  try {
+    if (streamManager) streamManager.setLanSharing(!!appConfig.lanSharing)
+  } catch (e) { console.warn('[StreamManager]', e.message) }
 
   // Apply saved Start with Windows setting
   try {
@@ -1478,6 +2002,7 @@ app.whenReady().then(async () => {
             uploaded: lifetimeUploaded,
             state: isDone ? 'Seeding' : 'Downloading',
             paused: false,
+            strategy: managed?.strategy || 'sequential',
             files: filesMapped
           })
         })
@@ -1527,6 +2052,7 @@ app.whenReady().then(async () => {
           uploaded: pTotalUp,
           state: managed.done ? 'Completed' : 'Paused',
           paused: true,
+          strategy: managed.strategy || 'sequential',
           done: managed.done || false,
           files: (managed.files || []).map((f, idx) => ({
             ...f,
@@ -1538,10 +2064,8 @@ app.whenReady().then(async () => {
 
       win.webContents.send('torrents-update', uiTorrents)
 
-      // Trigger throttled save only if active torrents exist
-      if (client && client.torrents.length > 0) {
-        saveTorrentsState()
-      }
+      // Enforce seeding goals (auto-pause finished torrents past ratio/time limits)
+      try { checkSeedingGoals() } catch (e) { console.warn('[SeedingGoal]', e.message) }
     }
   }, 1000)
 
@@ -1608,6 +2132,9 @@ function setupTorrentEventListeners(torrent) {
         }
       }
     } catch (e) { console.error('Notification error:', e) }
+
+    // Move finished payload to the completed folder ( if configured )
+    try { await maybeMoveCompleted(torrent) } catch (e) { console.warn('[MoveComplete]', e.message) }
 
     saveTorrentsState()
   })

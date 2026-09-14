@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useTorrentStream } from '../../hooks/useTorrentStream'
 import TorrentSourceInput from './TorrentSourceInput'
 import StreamFilePicker from './StreamFilePicker'
@@ -6,7 +6,7 @@ import StreamCinemaPlayer from './StreamCinemaPlayer'
 import StreamTelemetryBar from './StreamTelemetryBar'
 import { AlertTriangle, X, Check } from 'lucide-react'
 
-export default function StreamView({ activeTorrents = [] }) {
+export default function StreamView({ activeTorrents = [], streamRequest }) {
   const {
     status,
     torrentInfo,
@@ -22,6 +22,15 @@ export default function StreamView({ activeTorrents = [] }) {
   } = useTorrentStream()
 
   const [notification, setNotification] = useState(null)
+  const lastRequestRef = useRef(0)
+
+  // Search tab can hand off a magnet to stream instantly
+  useEffect(() => {
+    if (streamRequest?.magnet && streamRequest.ts !== lastRequestRef.current) {
+      lastRequestRef.current = streamRequest.ts
+      parseTorrent(streamRequest.magnet).catch(() => { })
+    }
+  }, [streamRequest, parseTorrent])
 
   const showNotification = (msg, type = 'success') => {
     setNotification({ msg, type })

@@ -55,6 +55,10 @@ export function useTorrents() {
         await window.ipcRenderer.invoke('toggle-file-selection', infoHash, fileIndexOrIndices, selected);
     }, []);
 
+    const setTorrentStrategy = useCallback(async (infoHash, strategy) => {
+        return await window.ipcRenderer.invoke('set-torrent-strategy', infoHash, strategy);
+    }, []);
+
     const pauseAll = useCallback(async () => {
         await window.ipcRenderer.invoke('pause-all-torrents');
     }, []);
@@ -93,6 +97,7 @@ export function useTorrents() {
         openFolder,
         reverify,
         toggleFileSelection,
+        setTorrentStrategy,
         pauseAll,
         resumeAll,
         openFile,
