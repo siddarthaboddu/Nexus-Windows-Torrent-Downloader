@@ -682,16 +682,34 @@ export class StreamManager {
   }
 
   /**
-   * Promote the current stream torrent into persistent download mode
+   * Promote the current stream torrent into persistent download mode.
+   * Best-effort carry-over: copies already-streamed bytes into the destination
+   * so the permanent download verifies and keeps those pieces instead of
+   * starting from zero. The live stream is untouched and keeps playing.
    */
   async promoteToDownload(destinationPath) {
-    if (!this.activeTorrent) {
+    const torrent = this.activeTorrent
+    if (!torrent) {
       throw new Error('No active stream to save')
     }
 
-    const magnetURI = this.activeTorrent.magnetURI
-    const infoHash = (this.activeTorrent.infoHash || '').toLowerCase()
-    const name = this.activeTorrent.name
+    const magnetURI = torrent.magnetURI
+    const infoHash = (torrent.infoHash || '').toLowerCase()
+    const name = torrent.name
+
+    if (!this.isUsingMainClient && this.activeFile) {
+      try {
+        const srcFull = path.join(this.tempCacheRoot, infoHash, this.activeFile.path)
+        const destFull = path.join(destinationPath, this.activeFile.path)
+        if (fsSync.existsSync(srcFull) && !fsSync.existsSync(destFull)) {
+          await fs.mkdir(path.dirname(destFull), { recursive: true })
+          await fs.copyFile(srcFull, destFull)
+          console.log(`[StreamManager] Carried streamed bytes into ${destFull}`)
+        }
+      } catch (e) {
+        console.warn('[StreamManager] Piece carry-over failed, download starts fresh:', e.message)
+      }
+    }
 
     return {
       magnetURI,

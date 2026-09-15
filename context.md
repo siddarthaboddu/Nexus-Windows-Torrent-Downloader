@@ -195,6 +195,15 @@ Nexus-Windows-Torrent-Downloader/
 - **Other-device playback**: cinema-player Cast menu (copy URL, open externally, LAN URL via `get-lan-ip`); optional LAN sharing binds the stream server to `0.0.0.0` for the next stream.
 - **Swarm health**: Add dialog reuses `stream-parse-torrent` for an early peers/size/files reading with a Healthy/Fair/Weak badge.
 
+### 5.8 Streaming Experience
+- Buffer-gated autoplay (12s contiguous or 90% buffered, 45s fallback) with Play-now override and distinct waiting-for-pieces / waiting-for-peers / slow-swarm states fed by live telemetry.
+- Resume playback per torrent+file via localStorage (long-form only); cleared on finish.
+- Autoplay-next-episode with an On/Off toggle in the Files drawer.
+- Accurate buffer display: contiguous-seconds-ahead chip next to the timestamp instead of file-end math.
+- Subtitle sync offset (±5s, applied to live VTTCues) and S/M/L sizing in the CC menu.
+- Stats-for-nerds overlay (resolution, buffer ahead, swarm, dropped frames) and multi-audio track switching where Chromium exposes `audioTracks`.
+- Promote-to-download carries already-streamed bytes into the destination so the permanent download keeps verified pieces; the live stream is untouched.
+
 ### 5.7 Reliability Hardening
 - `add-torrent` has a 120s metadata timeout and magnet dedup; resume/re-verify/promote paths guard against double-adds.
 - HTTP Range parsing is strict RFC 7233 (`electron/utils/rangeParser.js`); CORS echoes loopback origins only; `open-external` allowlists `http(s)`.

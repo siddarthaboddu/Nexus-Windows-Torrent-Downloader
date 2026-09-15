@@ -125,6 +125,7 @@ export default function StreamView({ activeTorrents = [], streamRequest }) {
           <StreamCinemaPlayer
             streamData={streamData}
             torrentInfo={torrentInfo}
+            streamStats={streamStats}
             onSwitchFile={(index) => startStream(torrentInfo.infoHash, index)}
             onOpenExternal={openExternal}
           />

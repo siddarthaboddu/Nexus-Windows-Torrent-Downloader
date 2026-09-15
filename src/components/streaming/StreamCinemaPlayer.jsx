@@ -18,7 +18,9 @@ import {
   Upload,
   Check,
   Cast,
-  Copy
+  Copy,
+  Gauge,
+  Languages
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -42,15 +44,83 @@ const formatTime = (seconds) => {
   return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`
 }
 
+const GATE_SECONDS = 12 // start playback only with this much contiguous buffer
+const GATE_TIMEOUT_MS = 45000 // ...or after this long, whichever comes first
+const RESUME_KEY = (h, i) => `nexus:pos:${h}:${i}`
+
+const loadSavedPosition = (infoHash, fileIndex) => {
+  try {
+    const raw = localStorage.getItem(RESUME_KEY(infoHash, fileIndex))
+    if (!raw) return null
+    const { t, d } = JSON.parse(raw)
+    return (typeof t === 'number' && t > 10) ? { t, d } : null
+  } catch {
+    return null
+  }
+}
+
+const savePosition = (infoHash, fileIndex, t, d) => {
+  try {
+    localStorage.setItem(RESUME_KEY(infoHash, fileIndex), JSON.stringify({ t, d, ts: Date.now() }))
+  } catch {
+    // private mode / quota — resume is best-effort
+  }
+}
+
+const clearSavedPosition = (infoHash, fileIndex) => {
+  try {
+    localStorage.removeItem(RESUME_KEY(infoHash, fileIndex))
+  } catch {
+    // best-effort: stale resume entries are harmless
+  }
+}
+
+const isTimeBuffered = (video, t) => {
+  try {
+    const b = video.buffered
+    for (let i = 0; i < b.length; i++) {
+      if (t >= b.start(i) && t <= b.end(i)) return true
+    }
+  } catch {
+    // video not ready — treat as unbuffered
+  }
+  return false
+}
+
+// Contiguous buffered seconds ahead of the playhead + total buffered %.
+const bufferInfo = (video) => {
+  try {
+    const b = video.buffered
+    const now = video.currentTime || 0
+    const dur = video.duration || 0
+    let ahead = 0
+    let total = 0
+    for (let i = 0; i < b.length; i++) {
+      const s = b.start(i)
+      const e = b.end(i)
+      total += Math.max(0, e - s)
+      if (now >= s && now <= e) ahead = Math.max(0, e - now)
+    }
+    return { ahead, pct: dur > 0 ? Math.min((total / dur) * 100, 100) : 0 }
+  } catch {
+    return { ahead: 0, pct: 0 }
+  }
+}
+
 export default function StreamCinemaPlayer({
   streamData,
   torrentInfo,
+  streamStats = {},
   onSwitchFile,
   onOpenExternal
 }) {
   const videoRef = useRef(null)
   const containerRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
+  const gateTimerRef = useRef(null)
+  const savePosRef = useRef(0)
+  const cueBaseRef = useRef(new Map()) // trackId -> [{ cue, start, end }]
+  const subtitleDelayRef = useRef(0)
 
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -58,13 +128,23 @@ export default function StreamCinemaPlayer({
   const [volume, setVolume] = useState(1)
   const [isMuted, setIsMuted] = useState(false)
   const [bufferedPercent, setBufferedPercent] = useState(0)
+  const [bufferAhead, setBufferAhead] = useState(0) // contiguous seconds ahead of playhead
   const [isBuffering, setIsBuffering] = useState(true)
+  const [isGating, setIsGating] = useState(true) // buffer-gated autoplay
+  const [waitingForPieces, setWaitingForPieces] = useState(false)
+  const [autoplayNext, setAutoplayNext] = useState(true)
+  const [resumeNote, setResumeNote] = useState(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const [playbackRate, setPlaybackRate] = useState(1)
   const [showRateMenu, setShowRateMenu] = useState(false)
   const [showFileDrawer, setShowFileDrawer] = useState(false)
   const [playbackError, setPlaybackError] = useState(null)
+  const [showStats, setShowStats] = useState(false)
+  const [audioTracks, setAudioTracks] = useState([]) // { index, label, language, enabled }
+  const [showAudioMenu, setShowAudioMenu] = useState(false)
+  const [subtitleDelay, setSubtitleDelay] = useState(0) // seconds, -5..+5
+  const [subtitleSize, setSubtitleSize] = useState('m') // s | m | l
   const [showSubtitleMenu, setShowSubtitleMenu] = useState(false)
   const [showCastMenu, setShowCastMenu] = useState(false)
   const [lanIp, setLanIp] = useState(null) // null = not fetched, false = unavailable
@@ -85,6 +165,7 @@ export default function StreamCinemaPlayer({
         setShowRateMenu(false)
         setShowSubtitleMenu(false)
         setShowCastMenu(false)
+        setShowAudioMenu(false)
       }, 2500)
     }
   }, [isPlaying])
@@ -102,6 +183,7 @@ export default function StreamCinemaPlayer({
       setShowRateMenu(false)
       setShowSubtitleMenu(false)
       setShowCastMenu(false)
+      setShowAudioMenu(false)
     }, 2500)
 
     return () => {
@@ -112,28 +194,132 @@ export default function StreamCinemaPlayer({
   }, [isPlaying])
 
   // Video event handlers
+  const tryPlay = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    video.play().then(() => {
+      setIsPlaying(true)
+      setIsBuffering(false)
+      setIsGating(false)
+      setWaitingForPieces(false)
+    }).catch((e) => {
+      console.warn('Playback blocked:', e)
+      setIsPlaying(false)
+    })
+  }, [])
+
+  const ungateAndPlay = useCallback(() => {
+    if (gateTimerRef.current) {
+      clearTimeout(gateTimerRef.current)
+      gateTimerRef.current = null
+    }
+    setIsGating(false)
+    setWaitingForPieces(false)
+    tryPlay()
+  }, [tryPlay])
+
   const handleTimeUpdate = () => {
     if (!videoRef.current) return
-    setCurrentTime(videoRef.current.currentTime)
+    const video = videoRef.current
+    const now = video.currentTime
+    setCurrentTime(now)
 
-    // Calculate buffered percentage
-    const buffered = videoRef.current.buffered
-    if (buffered.length > 0) {
-      const end = buffered.end(buffered.length - 1)
-      const dur = videoRef.current.duration
-      if (dur > 0) {
-        setBufferedPercent(Math.min((end / dur) * 100, 100))
-      }
+    const { ahead, pct } = bufferInfo(video)
+    setBufferAhead(ahead)
+    setBufferedPercent(pct)
+
+    // Piece-arrival clears the "waiting" state once the playhead is covered
+    if (waitingForPieces && isTimeBuffered(video, now)) {
+      setWaitingForPieces(false)
+    }
+
+    // Persist resume position (throttled, long-form only)
+    const dur = video.duration || 0
+    if (dur > 60 && now > 10 && now < dur - 15 && Date.now() - savePosRef.current > 5000) {
+      savePosRef.current = Date.now()
+      savePosition(streamData?.infoHash, streamData?.fileIndex, now, dur)
+    }
+  }
+
+  const handleProgress = () => {
+    if (!videoRef.current) return
+    const video = videoRef.current
+    const { ahead, pct } = bufferInfo(video)
+    setBufferAhead(ahead)
+    setBufferedPercent(pct)
+
+    const dur = video.duration || 0
+    const enough = ahead >= GATE_SECONDS
+      || pct >= 90
+      || (dur > 0 && dur < 30 && pct >= 50)
+    if (isGating && enough && !playbackError) {
+      ungateAndPlay()
+    }
+    if (waitingForPieces && isTimeBuffered(video, video.currentTime)) {
+      setWaitingForPieces(false)
     }
   }
 
   const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      setDuration(videoRef.current.duration || 0)
-      setIsBuffering(false)
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {
-        setIsPlaying(false)
-      })
+    const video = videoRef.current
+    if (!video) return
+    const dur = video.duration || 0
+    setDuration(dur)
+
+    // Fresh stream: gate autoplay until enough contiguous buffer arrives
+    setIsGating(true)
+    setIsBuffering(true)
+    setWaitingForPieces(false)
+    setBufferAhead(0)
+    setBufferedPercent(0)
+    setResumeNote(null)
+    cueBaseRef.current = new Map()
+
+    // Resume where we left off (long-form only, not near the end)
+    const saved = loadSavedPosition(streamData?.infoHash, streamData?.fileIndex)
+    if (saved && dur > 60 && saved.t < dur - 15) {
+      try { video.currentTime = saved.t } catch {
+        // seeking before data arrives — playback starts from 0 instead
+      }
+      setCurrentTime(saved.t)
+      setResumeNote(`Resumed from ${formatTime(saved.t)}`)
+      setTimeout(() => setResumeNote(null), 4000)
+    }
+
+    // Multi-audio detection (progressive enhancement — unsupported = no menu)
+    try {
+      const at = video.audioTracks
+      if (at && at.length > 1) {
+        setAudioTracks(Array.from({ length: at.length }, (_, i) => ({
+          index: i,
+          label: at[i].label || `Track ${i + 1}`,
+          language: at[i].language || '',
+          enabled: !!at[i].enabled
+        })))
+      } else {
+        setAudioTracks([])
+      }
+    } catch {
+      setAudioTracks([])
+    }
+
+    // Fallback: never gate longer than the timeout
+    if (gateTimerRef.current) clearTimeout(gateTimerRef.current)
+    gateTimerRef.current = setTimeout(() => {
+      gateTimerRef.current = null
+      ungateAndPlay()
+    }, GATE_TIMEOUT_MS)
+  }
+
+  const handleEnded = () => {
+    setIsPlaying(false)
+    clearSavedPosition(streamData?.infoHash, streamData?.fileIndex)
+    if (!autoplayNext) return
+    const files = (torrentInfo?.files || []).filter((f) => f.isVideo).sort((a, b) => a.index - b.index)
+    const pos = files.findIndex((f) => f.index === streamData?.fileIndex)
+    const next = pos >= 0 ? files[pos + 1] : null
+    if (next && onSwitchFile) {
+      onSwitchFile(next.index)
     }
   }
 
@@ -153,8 +339,13 @@ export default function StreamCinemaPlayer({
   const seek = (time) => {
     if (!videoRef.current) return
     const target = Math.max(0, Math.min(time, duration))
+    const jumpingToSparse = !isTimeBuffered(videoRef.current, target)
     videoRef.current.currentTime = target
     setCurrentTime(target)
+    if (jumpingToSparse && isGating === false) {
+      setWaitingForPieces(true)
+      setIsBuffering(true)
+    }
     handleUserActivity()
   }
 
@@ -330,6 +521,34 @@ export default function StreamCinemaPlayer({
     }
   }, [])
 
+  // Shift all sidecar cue timings by the chosen delay (VTTCues are mutable).
+  // Declared above the effects that consume it so dep arrays stay honest.
+  const applySubtitleDelay = useCallback((offset) => {
+    const video = videoRef.current
+    if (!video) return
+    const els = video.querySelectorAll('track')
+    els.forEach((el) => {
+      const track = el.track
+      if (!track || !track.cues) return
+      const id = el.getAttribute('data-track-id')
+      if (!cueBaseRef.current.has(id)) {
+        try {
+          cueBaseRef.current.set(id, Array.from(track.cues).map((c) => ({ cue: c, start: c.startTime, end: c.endTime })))
+        } catch {
+          return
+        }
+      }
+      cueBaseRef.current.get(id).forEach(({ cue, start, end }) => {
+        try {
+          cue.startTime = Math.max(0, start + offset)
+          cue.endTime = Math.max(0.2, end + offset)
+        } catch {
+          // read-only cue in this browser — offset skipped for it
+        }
+      })
+    })
+  }, [])
+
   // Apply selection to the underlying TextTrackList (<track default> alone
   // does not switch after load)
   useEffect(() => {
@@ -341,7 +560,9 @@ export default function StreamCinemaPlayer({
       const trackId = trackEl?.getAttribute('data-track-id')
       track.mode = activeSubtitle !== 'off' && trackId === activeSubtitle ? 'showing' : 'disabled'
     }
-  }, [activeSubtitle, allSubtitleTracks.length, streamData?.streamUrl])
+    // Cues load async — re-apply the sync offset once they're present
+    applySubtitleDelay(subtitleDelayRef.current)
+  }, [activeSubtitle, allSubtitleTracks.length, streamData?.streamUrl, applySubtitleDelay])
 
   const handleSubtitleUpload = async (e) => {
     const file = e.target.files?.[0]
@@ -365,6 +586,95 @@ export default function StreamCinemaPlayer({
   }
 
   const subtitlesOn = activeSubtitle !== 'off'
+
+  useEffect(() => {
+    subtitleDelayRef.current = subtitleDelay
+    applySubtitleDelay(subtitleDelay)
+  }, [subtitleDelay, applySubtitleDelay])
+
+  // Live stats ticker (refreshes dropped-frame + resolution reads)
+  useEffect(() => {
+    if (!showStats) return
+    const id = setInterval(() => {
+      if (videoRef.current) {
+        const { ahead, pct } = bufferInfo(videoRef.current)
+        setBufferAhead(ahead)
+        setBufferedPercent(pct)
+      }
+    }, 1000)
+    return () => clearInterval(id)
+  }, [showStats])
+
+  // Reset per-stream playback state (delay/size prefs survive file switches)
+  useEffect(() => {
+    setWaitingForPieces(false)
+    setBufferAhead(0)
+    setAudioTracks([])
+    setShowAudioMenu(false)
+    setResumeNote(null)
+    return () => {
+      if (gateTimerRef.current) {
+        clearTimeout(gateTimerRef.current)
+        gateTimerRef.current = null
+      }
+    }
+  }, [streamData?.streamUrl])
+
+  const selectAudioTrack = (index) => {
+    const video = videoRef.current
+    try {
+      const at = video?.audioTracks
+      if (at) {
+        for (let i = 0; i < at.length; i++) at[i].enabled = (i === index)
+        setAudioTracks(Array.from({ length: at.length }, (_, i) => ({
+          index: i,
+          label: at[i].label || `Track ${i + 1}`,
+          language: at[i].language || '',
+          enabled: i === index
+        })))
+      }
+    } catch (e) {
+      console.warn('[Audio] Switch failed:', e)
+    }
+    setShowAudioMenu(false)
+    handleUserActivity()
+  }
+
+  // Slow-swarm + stall messaging from existing telemetry
+  const swarmSpeed = streamStats.downloadSpeed || 0
+  const swarmPeers = streamStats.numPeers || 0
+  const swarmDead = swarmPeers === 0
+  const swarmSlow = !swarmDead && swarmSpeed < 50 * 1024
+  const stalled = waitingForPieces || swarmDead || swarmSlow
+
+  const stallMessage = waitingForPieces
+    ? 'Waiting for pieces…'
+    : isGating
+      ? `Preparing stream… ${Math.round(bufferedPercent)}%`
+      : swarmDead
+        ? 'Waiting for peers…'
+        : 'Buffering from Swarm…'
+  const stallHint = waitingForPieces
+    ? 'You jumped ahead of the download — pieces are on the way.'
+    : isGating
+      ? 'Playback starts automatically with enough buffer.'
+      : swarmDead
+        ? 'No peers connected yet. The stream starts when the swarm responds.'
+        : swarmSlow
+          ? 'Slow swarm — leave it buffering or open in VLC.'
+          : null
+
+  const playbackQuality = (() => {
+    if (!showStats) return null
+    try {
+      const q = videoRef.current?.getVideoPlaybackQuality?.()
+      return q ? { dropped: q.droppedVideoFrames, total: q.totalVideoFrames } : null
+    } catch {
+      return null
+    }
+  })()
+
+  const cueFontSize = subtitleSize === 's' ? '0.8em' : subtitleSize === 'l' ? '1.15em' : '0.95em'
 
   // ---- Cast / other-device playback ----
   // The stream URL is loopback-only unless LAN sharing is enabled in Settings.
@@ -406,7 +716,7 @@ export default function StreamCinemaPlayer({
       )}
     >
       {/* HTML5 Video Element */}
-      <style>{`video::cue { background: rgba(0,0,0,0.7); color: #fff; font-size: 0.95em; }`}</style>
+      <style>{`video::cue { background: rgba(0,0,0,0.7); color: #fff; font-size: ${cueFontSize}; }`}</style>
       <video
         ref={videoRef}
         key={streamData.streamUrl}
@@ -414,11 +724,19 @@ export default function StreamCinemaPlayer({
         crossOrigin="anonymous"
         onClick={togglePlay}
         onTimeUpdate={handleTimeUpdate}
+        onProgress={handleProgress}
         onLoadedMetadata={handleLoadedMetadata}
+        onEnded={handleEnded}
         onWaiting={() => setIsBuffering(true)}
         onPlaying={() => {
           setIsBuffering(false)
           setPlaybackError(null)
+          setIsGating(false)
+          setWaitingForPieces(false)
+          if (gateTimerRef.current) {
+            clearTimeout(gateTimerRef.current)
+            gateTimerRef.current = null
+          }
         }}
         onError={(e) => {
           console.warn('[VideoPlayer] Playback Error:', e)
@@ -440,14 +758,44 @@ export default function StreamCinemaPlayer({
         ))}
       </video>
 
-      {/* Buffering Indicator */}
-      {isBuffering && !playbackError && (
+      {/* Buffering / Gating Indicator */}
+      {(isBuffering || isGating) && !playbackError && (
         <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs gap-3">
           <div className="w-16 h-16 rounded-full bg-background/80 backdrop-blur-md flex items-center justify-center shadow-2xl border border-border/50">
             <Loader2 size={32} className="text-primary animate-spin" />
           </div>
           <p className="text-white text-xs font-semibold tracking-wider uppercase drop-shadow-md bg-black/60 px-3 py-1 rounded-full">
-            Buffering from Swarm...
+            {stallMessage}
+          </p>
+          {stallHint && (
+            <p className="text-white/80 text-[11px] drop-shadow-md bg-black/60 px-3 py-1 rounded-full max-w-md text-center">
+              {stallHint}
+            </p>
+          )}
+          {isGating && (
+            <button
+              onClick={ungateAndPlay}
+              className="pointer-events-auto px-4 py-1.5 rounded-full bg-primary hover:bg-blue-600 text-white text-xs font-semibold shadow-lg transition-all active:scale-95"
+            >
+              Play now
+            </button>
+          )}
+          {!isGating && stalled && (
+            <button
+              onClick={() => onOpenExternal(streamData.streamUrl)}
+              className="pointer-events-auto px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold backdrop-blur-md transition-all active:scale-95"
+            >
+              Open in VLC instead
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Resume notice */}
+      {resumeNote && !playbackError && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <p className="text-white text-xs font-semibold bg-black/70 px-3 py-1.5 rounded-full border border-white/10">
+            {resumeNote}
           </p>
         </div>
       )}
@@ -507,6 +855,18 @@ export default function StreamCinemaPlayer({
           </button>
         )}
       </div>
+
+      {/* Stats-for-nerds overlay */}
+      {showStats && (
+        <div className="absolute top-20 left-4 z-20 bg-black/70 backdrop-blur-md border border-white/10 rounded-xl px-3 py-2 font-mono text-[11px] text-white/90 space-y-0.5 pointer-events-none">
+          <p>Video: {videoRef.current?.videoWidth || '?'}×{videoRef.current?.videoHeight || '?'} · {streamData.mimeType || 'video'}</p>
+          <p>Buffered ahead: {Math.round(bufferAhead)}s ({Math.round(bufferedPercent)}%)</p>
+          <p>Swarm: {((streamStats.downloadSpeed || 0) / 1024).toFixed(0)} KB/s · {streamStats.numPeers || 0} peers · {Math.round((streamStats.progress || 0) * 100)}%</p>
+          {playbackQuality && (
+            <p>Dropped frames: {playbackQuality.dropped} / {playbackQuality.total}</p>
+          )}
+        </div>
+      )}
 
       {/* Bottom Controls Bar */}
       <div
@@ -598,8 +958,13 @@ export default function StreamCinemaPlayer({
             </div>
 
             {/* Time Stamp */}
-            <div className="font-mono text-white/90 text-xs ml-2 select-none">
-              {formatTime(currentTime)} / {formatTime(duration)}
+            <div className="font-mono text-white/90 text-xs ml-2 select-none flex items-center gap-1.5">
+              <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
+              {bufferAhead > 1 && (
+                <span className="text-[10px] text-emerald-300 bg-emerald-500/20 border border-emerald-500/30 px-1.5 py-0.5 rounded-full" title="Contiguous video buffered ahead of the playhead">
+                  +{Math.round(bufferAhead)}s
+                </span>
+              )}
             </div>
           </div>
 
@@ -652,6 +1017,49 @@ export default function StreamCinemaPlayer({
                 </div>
               )}
             </div>
+            {/* Audio tracks (multi-audio files only) */}
+            {audioTracks.length > 1 && (
+              <div className="relative">
+                <button
+                  onClick={() => setShowAudioMenu(!showAudioMenu)}
+                  className="p-2 hover:bg-white/20 rounded-xl transition-colors"
+                  title="Audio track"
+                  aria-label="Choose audio track"
+                >
+                  <Languages size={16} />
+                </button>
+                {showAudioMenu && (
+                  <div className="absolute bottom-9 right-0 bg-secondary/95 backdrop-blur-xl border border-border/80 rounded-xl py-1 shadow-2xl z-30 min-w-[180px]">
+                    {audioTracks.map((t) => (
+                      <button
+                        key={t.index}
+                        onClick={() => selectAudioTrack(t.index)}
+                        className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/30 transition-colors flex items-center justify-between gap-2"
+                      >
+                        <span className="truncate flex-1">
+                          {t.label}{t.language ? ` · ${t.language}` : ''}
+                        </span>
+                        {t.enabled && <Check size={12} className="text-primary flex-shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Stats for nerds */}
+            <div className="relative">
+              <button
+                onClick={() => { setShowStats(!showStats); handleUserActivity() }}
+                className={clsx(
+                  "p-2 rounded-xl transition-colors",
+                  showStats ? "bg-primary/40 text-white" : "hover:bg-white/20"
+                )}
+                title="Playback statistics"
+                aria-label="Toggle playback statistics"
+              >
+                <Gauge size={16} />
+              </button>
+            </div>
             {/* Subtitles / CC */}
             <div className="relative">
               <button
@@ -686,6 +1094,44 @@ export default function StreamCinemaPlayer({
                     </button>
                   ))}
                   <div className="border-t border-border/60 mt-1 pt-1">
+                    <div className="px-3 py-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-1">
+                        <span>Sync offset</span>
+                        <span className="font-mono text-foreground">{subtitleDelay > 0 ? `+${subtitleDelay.toFixed(1)}s` : `${subtitleDelay.toFixed(1)}s`}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="-5"
+                        max="5"
+                        step="0.1"
+                        value={subtitleDelay}
+                        onChange={(e) => setSubtitleDelay(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-white/30 rounded-full accent-primary cursor-pointer"
+                        aria-label="Subtitle sync offset in seconds"
+                      />
+                    </div>
+                    <div className="px-3 py-1.5 flex items-center justify-between">
+                      <span className="text-[11px] text-muted-foreground">Size</span>
+                      <div className="flex gap-1">
+                        {[
+                          { id: 's', label: 'S' },
+                          { id: 'm', label: 'M' },
+                          { id: 'l', label: 'L' }
+                        ].map((s) => (
+                          <button
+                            key={s.id}
+                            onClick={() => setSubtitleSize(s.id)}
+                            className={clsx(
+                              "w-7 h-6 rounded-md text-[11px] font-bold transition-colors",
+                              subtitleSize === s.id ? "bg-primary text-white" : "bg-secondary text-muted-foreground hover:text-foreground"
+                            )}
+                            aria-label={`Subtitle size ${s.label}`}
+                          >
+                            {s.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                     <button
                       onClick={() => subtitleInputRef.current?.click()}
                       className="w-full text-left px-3 py-1.5 text-xs hover:bg-primary/30 transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
@@ -764,12 +1210,24 @@ export default function StreamCinemaPlayer({
         <div className="absolute inset-y-0 right-0 w-80 bg-background/95 backdrop-blur-xl border-l border-border p-4 shadow-2xl z-30 flex flex-col gap-3 animate-in slide-in-from-right duration-300">
           <div className="flex items-center justify-between pb-2 border-b border-border/60">
             <h4 className="text-sm font-bold text-foreground">Episodes & Files</h4>
-            <button
-              onClick={() => setShowFileDrawer(false)}
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              Close
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setAutoplayNext(!autoplayNext)}
+                className={clsx(
+                  "text-[11px] font-semibold px-2 py-1 rounded-lg border transition-colors",
+                  autoplayNext ? "bg-primary/20 text-primary border-primary/40" : "text-muted-foreground border-border hover:text-foreground"
+                )}
+                title="Automatically play the next file when this one ends"
+              >
+                Autoplay: {autoplayNext ? 'On' : 'Off'}
+              </button>
+              <button
+                onClick={() => setShowFileDrawer(false)}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Close
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
