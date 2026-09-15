@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react'
-import { Play, UploadCloud, Link as LinkIcon, Loader2, Film, Sparkles, FolderDown } from 'lucide-react'
+import { Play, UploadCloud, Link as LinkIcon, Loader2, Film, Sparkles, FolderDown, X } from 'lucide-react'
 import clsx from 'clsx'
 
 const formatBytes = (bytes) => {
@@ -10,7 +10,7 @@ const formatBytes = (bytes) => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
 }
 
-export default function TorrentSourceInput({ onSelectSource, isLoading, activeTorrents = [] }) {
+export default function TorrentSourceInput({ onSelectSource, onCancel, isLoading, activeTorrents = [] }) {
   const [magnetInput, setMagnetInput] = useState('')
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef(null)
@@ -98,6 +98,14 @@ export default function TorrentSourceInput({ onSelectSource, isLoading, activeTo
               <h4 className="text-lg font-bold text-foreground">Fetching Torrent Metadata</h4>
               <p className="text-sm text-muted-foreground">Connecting to trackers and DHT swarm to inspect video files...</p>
             </div>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-secondary hover:bg-secondary/70 text-foreground text-xs font-semibold border border-border/60 transition-all active:scale-95"
+            >
+              <X size={14} />
+              <span>Cancel</span>
+            </button>
           </div>
         )}
 

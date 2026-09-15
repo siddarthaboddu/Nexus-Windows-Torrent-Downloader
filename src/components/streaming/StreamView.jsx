@@ -99,6 +99,7 @@ export default function StreamView({ activeTorrents = [], streamRequest }) {
       {(status === 'idle' || status === 'parsing') && (
         <TorrentSourceInput
           onSelectSource={parseTorrent}
+          onCancel={reset}
           isLoading={status === 'parsing'}
           activeTorrents={activeTorrents}
         />

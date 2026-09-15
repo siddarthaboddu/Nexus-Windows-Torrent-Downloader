@@ -16,6 +16,7 @@ export function useTorrentStream() {
   const [error, setError] = useState(null)
 
   const pollingRef = useRef(null)
+  const parseRequestRef = useRef(0) // guards against late resolve after cancel
 
   // Poll status when streaming
   useEffect(() => {
@@ -52,6 +53,7 @@ export function useTorrentStream() {
 
   // Parse metadata from magnet link or torrent file
   const parseTorrent = useCallback(async (source) => {
+    const reqId = ++parseRequestRef.current
     try {
       setStatus('parsing')
       setError(null)
@@ -59,10 +61,12 @@ export function useTorrentStream() {
         throw new Error('IPC renderer not available')
       }
       const info = await window.ipcRenderer.invoke('stream-parse-torrent', source)
+      if (parseRequestRef.current !== reqId) return null // cancelled mid-flight
       setTorrentInfo(info)
       setStatus('ready')
       return info
     } catch (err) {
+      if (parseRequestRef.current !== reqId) return null // cancelled mid-flight
       console.error('[useTorrentStream] parseTorrent error:', err)
       setError(err.message || 'Failed to parse torrent metadata')
       setStatus('error')
@@ -138,6 +142,7 @@ export function useTorrentStream() {
 
   // Reset to initial state
   const reset = useCallback(() => {
+    parseRequestRef.current++ // invalidate any in-flight parse
     stopStream()
     setTorrentInfo(null)
     setError(null)
