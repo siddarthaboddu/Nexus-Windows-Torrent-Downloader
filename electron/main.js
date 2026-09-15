@@ -58,10 +58,38 @@ async function saveLastDownloadPath(downloadPath) {
   }
 }
 
+// Open trackers injected as client defaults so every torrent — user magnets,
+// .torrent files, and search results — discovers more peers without rewriting
+// the magnet itself (WebTorrent merges client.tracker.announce automatically).
+const OPEN_TRACKERS = [
+  'udp://tracker.opentrackr.org:1337/announce',
+  'udp://open.stealth.si:80/announce',
+  'udp://tracker.torrent.eu.org:451/announce',
+  'udp://exodus.desync.com:6969/announce',
+  'udp://tracker.openbittorrent.com:6969/announce',
+  'udp://tracker.coppersurfer.tk:6969/announce',
+  'udp://tracker.leechers-paradise.org:6969/announce',
+  'udp://p4p.arenabg.com:1337/announce',
+  'udp://tracker.internetwarriors.net:1337/announce',
+  'udp://9.rarbg.to:2710/announce',
+  'udp://9.rarbg.com:2710/announce',
+  'udp://open.demonii.com:1337/announce'
+]
+
 async function initWebTorrent() {
   const { default: WebTorrent } = await import('webtorrent')
 
-  const opts = {}
+  const opts = {
+    // Max-throughput tuning: more concurrent peers + full discovery stack.
+    // Defaults were 55 conns; 200 lets healthy swarms saturate your pipe.
+    maxConns: 200,
+    dht: true,
+    lsd: true,
+    utPex: true,
+    natUpnp: true,
+    natPmp: true,
+    tracker: { announce: OPEN_TRACKERS }
+  }
   if (appConfig.networkPort) {
     console.log('[WebTorrent] Initializing on port:', appConfig.networkPort)
     opts.port = appConfig.networkPort // Common alias
@@ -266,7 +294,7 @@ async function addTorrentBySource(torrentId, downloadDir) {
               paused: false,
               name: dupe.name,
               deselectedFiles: [],
-              strategy: 'sequential',
+              strategy: 'rarest',
               baseUploaded: 0,
               baseDownloaded: 0,
               totalUploaded: 0,
@@ -314,7 +342,7 @@ async function addTorrentBySource(torrentId, downloadDir) {
               paused: false,
               name: torrent.name,
               deselectedFiles: [],
-              strategy: 'sequential',
+              strategy: 'rarest',
               baseUploaded: 0,
               baseDownloaded: 0,
               totalUploaded: 0,
@@ -573,7 +601,7 @@ async function maybeMoveCompleted(torrent) {
   notifyUser('Download moved', `${name} was moved to the completed folder.`)
   if (client && managed && !managed.paused) {
     try {
-      client.add(managed.magnetURI, { path: destRoot, strategy: managed.strategy || 'sequential' }, (t) => {
+      client.add(managed.magnetURI, { path: destRoot, strategy: managed.strategy || 'rarest' }, (t) => {
         setupTorrentEventListeners(t)
       })
     } catch (e) {
@@ -1102,7 +1130,7 @@ function setupIpcHandlers() {
           uploaded: lifetimeUploaded,
           state: isDone ? 'Seeding' : 'Downloading',
           paused: false,
-          strategy: managed?.strategy || 'sequential',
+          strategy: managed?.strategy || 'rarest',
           files: filesMapped
         })
       })
@@ -1139,7 +1167,7 @@ function setupIpcHandlers() {
           uploaded: pTotalUp,
           state: (managed.done || managed.progress >= 1) ? 'Completed' : 'Paused',
           paused: true,
-          strategy: managed.strategy || 'sequential',
+          strategy: managed.strategy || 'rarest',
           done: managed.done || managed.progress >= 1,
           files: (managed.files || []).map((f, idx) => ({
             ...f,
@@ -1259,7 +1287,7 @@ function setupIpcHandlers() {
       t.baseDownloaded = t.totalDownloaded || t.baseDownloaded || 0
 
       // Re-add to WebTorrent
-      client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
+      client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'rarest' }, (torrent) => {
         setupTorrentEventListeners(torrent)
       })
       t.paused = false
@@ -1369,7 +1397,7 @@ function setupIpcHandlers() {
           // Once removed, immediately re-add to force hashing
           // Ensure we set paused=false
           t.paused = false
-          client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
+          client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'rarest' }, (torrent) => {
             console.log(`[Reverify] Started re-check for ${torrent.name}`)
             setupTorrentEventListeners(torrent)
             pendingReverify.delete(targetHash)
@@ -1424,7 +1452,7 @@ function setupIpcHandlers() {
         t.baseUploaded = t.totalUploaded || t.baseUploaded || 0
         t.baseDownloaded = t.totalDownloaded || t.baseDownloaded || 0
         try {
-          client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
+          client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'rarest' }, (torrent) => {
             setupTorrentEventListeners(torrent)
           })
         } catch { }
@@ -1483,7 +1511,7 @@ function setupIpcHandlers() {
     }
 
     return new Promise((resolve, _reject) => {
-      client.add(info.magnetURI, { path: destinationPath, strategy: 'sequential' }, (torrent) => {
+      client.add(info.magnetURI, { path: destinationPath, strategy: 'rarest' }, (torrent) => {
         const normHash = (torrent.infoHash || '').toLowerCase()
         const exists = managedTorrents.find(t => (t.infoHash || '').toLowerCase() === normHash)
         if (!exists) {
@@ -1494,7 +1522,7 @@ function setupIpcHandlers() {
             paused: false,
             name: torrent.name,
             deselectedFiles: [],
-            strategy: 'sequential',
+            strategy: 'rarest',
             baseUploaded: 0,
             baseDownloaded: 0,
             totalUploaded: 0,
@@ -1510,12 +1538,7 @@ function setupIpcHandlers() {
   })
 
   // --- Built-in Torrent Search (public sources, rendered in SearchView) ---
-  const PUBLIC_TRACKERS = [
-    'udp://tracker.opentrackr.org:1337/announce',
-    'udp://open.stealth.si:80/announce',
-    'udp://tracker.torrent.eu.org:451/announce',
-    'udp://exodus.desync.com:6969/announce'
-  ]
+  const PUBLIC_TRACKERS = OPEN_TRACKERS
 
   function buildSearchMagnet(infoHash, name) {
     const tr = PUBLIC_TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('')
@@ -1791,7 +1814,7 @@ async function restoreSession() {
       // Re-add active torrents (Downloading or Seeding)
       try {
         console.log(`[Startup] Resuming: ${t.name || t.infoHash} `)
-        client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'sequential' }, (torrent) => {
+        client.add(t.magnetURI, { path: t.path, strategy: t.strategy || 'rarest' }, (torrent) => {
           console.log(`[Startup] Active: ${torrent.name} `)
           setupTorrentEventListeners(torrent)
         })
@@ -2002,7 +2025,7 @@ app.whenReady().then(async () => {
             uploaded: lifetimeUploaded,
             state: isDone ? 'Seeding' : 'Downloading',
             paused: false,
-            strategy: managed?.strategy || 'sequential',
+            strategy: managed?.strategy || 'rarest',
             files: filesMapped
           })
         })
@@ -2052,7 +2075,7 @@ app.whenReady().then(async () => {
           uploaded: pTotalUp,
           state: managed.done ? 'Completed' : 'Paused',
           paused: true,
-          strategy: managed.strategy || 'sequential',
+          strategy: managed.strategy || 'rarest',
           done: managed.done || false,
           files: (managed.files || []).map((f, idx) => ({
             ...f,

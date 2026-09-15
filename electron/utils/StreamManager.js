@@ -227,7 +227,30 @@ export class StreamManager {
     if (!this.streamClient || this.streamClient.destroyed) {
       const { default: WebTorrent } = await import('webtorrent')
       this.streamClient = new WebTorrent({
-        // Ephemeral client for streaming
+        // Ephemeral client for streaming: wide peer net, but sequential
+        // piece order (WebTorrent default) so playback fills ahead first.
+        maxConns: 200,
+        dht: true,
+        lsd: true,
+        utPex: true,
+        natUpnp: true,
+        natPmp: true,
+        tracker: {
+          announce: [
+            'udp://tracker.opentrackr.org:1337/announce',
+            'udp://open.stealth.si:80/announce',
+            'udp://tracker.torrent.eu.org:451/announce',
+            'udp://exodus.desync.com:6969/announce',
+            'udp://tracker.openbittorrent.com:6969/announce',
+            'udp://tracker.coppersurfer.tk:6969/announce',
+            'udp://tracker.leechers-paradise.org:6969/announce',
+            'udp://p4p.arenabg.com:1337/announce',
+            'udp://tracker.internetwarriors.net:1337/announce',
+            'udp://9.rarbg.to:2710/announce',
+            'udp://9.rarbg.com:2710/announce',
+            'udp://open.demonii.com:1337/announce'
+          ]
+        }
       })
 
       this.streamClient.on('error', (err) => {
@@ -481,6 +504,11 @@ export class StreamManager {
         }
         const { start, end } = parsed
         const chunkSize = (end - start) + 1
+        // NOTE: no manual torrent.critical() here. file.createReadStream()
+        // already prioritizes its own window via FileIterator, and critical
+        // flags are sticky (never cleared) — marking 10MB on every Range
+        // request accumulates until everything is "critical", which defeats
+        // prioritization and thrashes the swarm.
         res.writeHead(206, {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Accept-Ranges': 'bytes',

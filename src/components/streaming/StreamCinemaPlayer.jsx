@@ -119,6 +119,7 @@ export default function StreamCinemaPlayer({
   const controlsTimeoutRef = useRef(null)
   const gateTimerRef = useRef(null)
   const savePosRef = useRef(0)
+  const lastUiBufferRef = useRef({ ahead: 0, pct: 0, at: 0 })
   const cueBaseRef = useRef(new Map()) // trackId -> [{ cue, start, end }]
   const subtitleDelayRef = useRef(0)
 
@@ -193,6 +194,21 @@ export default function StreamCinemaPlayer({
     }
   }, [isPlaying])
 
+  // Push buffer UI state only on material change: progress/timeupdate fire
+  // constantly during a live download and naive setState each event
+  // re-renders the whole player tree (jank mistaken for stream lag).
+  const pushBufferState = useCallback((ahead, pct, force = false) => {
+    const prev = lastUiBufferRef.current
+    const now = Date.now()
+    if (!force
+      && Math.abs(ahead - prev.ahead) < 0.5
+      && Math.abs(pct - prev.pct) < 1
+      && now - prev.at < 1000) return
+    lastUiBufferRef.current = { ahead, pct, at: now }
+    setBufferAhead(ahead)
+    setBufferedPercent(pct)
+  }, [])
+
   // Video event handlers
   const tryPlay = useCallback(() => {
     const video = videoRef.current
@@ -225,8 +241,7 @@ export default function StreamCinemaPlayer({
     setCurrentTime(now)
 
     const { ahead, pct } = bufferInfo(video)
-    setBufferAhead(ahead)
-    setBufferedPercent(pct)
+    pushBufferState(ahead, pct)
 
     // Piece-arrival clears the "waiting" state once the playhead is covered
     if (waitingForPieces && isTimeBuffered(video, now)) {
@@ -245,8 +260,7 @@ export default function StreamCinemaPlayer({
     if (!videoRef.current) return
     const video = videoRef.current
     const { ahead, pct } = bufferInfo(video)
-    setBufferAhead(ahead)
-    setBufferedPercent(pct)
+    pushBufferState(ahead, pct)
 
     const dur = video.duration || 0
     const enough = ahead >= GATE_SECONDS
@@ -598,12 +612,11 @@ export default function StreamCinemaPlayer({
     const id = setInterval(() => {
       if (videoRef.current) {
         const { ahead, pct } = bufferInfo(videoRef.current)
-        setBufferAhead(ahead)
-        setBufferedPercent(pct)
+        pushBufferState(ahead, pct, true)
       }
     }, 1000)
     return () => clearInterval(id)
-  }, [showStats])
+  }, [showStats, pushBufferState])
 
   // Reset per-stream playback state (delay/size prefs survive file switches)
   useEffect(() => {
