@@ -230,7 +230,15 @@ export class StreamManager {
         // Ephemeral client for streaming: wide peer net, but sequential
         // piece order (WebTorrent default) so playback fills ahead first.
         maxConns: 200,
-        dht: true,
+        dht: {
+          bootstrap: [
+            'router.bittorrent.com:6881',
+            'router.utorrent.com:6881',
+            'dht.transmissionbt.com:6881',
+            'dht.libtorrent.org:25401',
+            'router.bitcomet.com:554'
+          ]
+        },
         lsd: true,
         utPex: true,
         natUpnp: true,
@@ -248,7 +256,14 @@ export class StreamManager {
             'udp://tracker.internetwarriors.net:1337/announce',
             'udp://9.rarbg.to:2710/announce',
             'udp://9.rarbg.com:2710/announce',
-            'udp://open.demonii.com:1337/announce'
+            'udp://open.demonii.com:1337/announce',
+            'udp://open.tracker.cl:1337/announce',
+            'udp://tracker.dler.org:6969/announce',
+            'udp://movies.zsw.ca:6969/announce',
+            'udp://tracker.tiny-vps.com:6969/announce',
+            'udp://retracker.lanta.net:2710/announce',
+            'http://tracker.openbittorrent.com:80/announce',
+            'http://open.tracker.cl:1337/announce'
           ]
         }
       })
@@ -436,6 +451,12 @@ export class StreamManager {
     } catch (e) {
       console.warn('[StreamManager] Error selecting file:', e)
     }
+
+    // Playback needs pieces in order; the shared main-client torrent may be
+    // on rarest-first for raw speed, so force sequential for the stream.
+    try {
+      torrent.strategy = 'sequential'
+    } catch { }
 
     // 5. Start HTTP Range 206 Streaming Server
     const mimeType = this.getMimeType(targetFile.name)

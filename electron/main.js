@@ -73,7 +73,24 @@ const OPEN_TRACKERS = [
   'udp://tracker.internetwarriors.net:1337/announce',
   'udp://9.rarbg.to:2710/announce',
   'udp://9.rarbg.com:2710/announce',
-  'udp://open.demonii.com:1337/announce'
+  'udp://open.demonii.com:1337/announce',
+  'udp://open.tracker.cl:1337/announce',
+  'udp://tracker.dler.org:6969/announce',
+  'udp://movies.zsw.ca:6969/announce',
+  'udp://tracker.tiny-vps.com:6969/announce',
+  'udp://retracker.lanta.net:2710/announce',
+  'http://tracker.openbittorrent.com:80/announce',
+  'http://open.tracker.cl:1337/announce'
+]
+
+// Extra DHT bootstrap nodes on top of WebTorrent's 3 defaults — more doors
+// into the DHT means faster peer discovery, especially for fresh magnets.
+const DHT_BOOTSTRAP = [
+  'router.bittorrent.com:6881',
+  'router.utorrent.com:6881',
+  'dht.transmissionbt.com:6881',
+  'dht.libtorrent.org:25401',
+  'router.bitcomet.com:554'
 ]
 
 async function initWebTorrent() {
@@ -83,7 +100,7 @@ async function initWebTorrent() {
     // Max-throughput tuning: more concurrent peers + full discovery stack.
     // Defaults were 55 conns; 200 lets healthy swarms saturate your pipe.
     maxConns: 200,
-    dht: true,
+    dht: { bootstrap: DHT_BOOTSTRAP },
     lsd: true,
     utPex: true,
     natUpnp: true,
