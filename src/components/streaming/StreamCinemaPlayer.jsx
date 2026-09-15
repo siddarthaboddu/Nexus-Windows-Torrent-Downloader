@@ -121,6 +121,7 @@ export default function StreamCinemaPlayer({
   const gateTimerRef = useRef(null)
   const savePosRef = useRef(0)
   const lastUiBufferRef = useRef({ ahead: 0, pct: 0, at: 0 })
+  const stuckRef = useRef({ t: 0, at: 0 }) // last playback-progress timestamp (decoder watchdog)
   const cueBaseRef = useRef(new Map()) // trackId -> [{ cue, start, end }]
   const subtitleDelayRef = useRef(0)
 
@@ -286,6 +287,7 @@ export default function StreamCinemaPlayer({
     const video = videoRef.current
     const now = video.currentTime
     setCurrentTime(now)
+    stuckRef.current = { t: now, at: Date.now() } // picture is advancing — decoder alive
 
     const { ahead, pct } = bufferInfo(video)
     pushBufferState(ahead, pct)
@@ -335,6 +337,7 @@ export default function StreamCinemaPlayer({
     setBufferedPercent(0)
     setResumeNote(null)
     cueBaseRef.current = new Map()
+    stuckRef.current = { t: 0, at: Date.now() } // arm the decoder watchdog clock
 
     // Resume where we left off (long-form only, not near the end)
     const saved = loadSavedPosition(streamData?.infoHash, streamData?.fileIndex)
@@ -654,6 +657,25 @@ export default function StreamCinemaPlayer({
     applySubtitleDelay(subtitleDelay)
   }, [subtitleDelay, applySubtitleDelay])
 
+  // Decoder watchdog: some files (10-bit H.264, HEVC, DTS audio) buffer
+  // fine but never produce a frame — the element fires no error, just
+  // endless "waiting". If the picture hasn't advanced for 15s despite a
+  // healthy buffer, route to the external-player card instead of spinning.
+  useEffect(() => {
+    if (!isBuffering && !waitingForPieces) return
+    if (isGating || prebuffering || playbackError) return
+    const id = setInterval(() => {
+      const video = videoRef.current
+      if (!video) return
+      const { ahead } = bufferInfo(video)
+      if (ahead >= GATE_SECONDS && Date.now() - stuckRef.current.at > 15000) {
+        setPlaybackError('The stream is buffering data, but the built-in player cannot decode the picture — this file likely uses a codec Chromium does not support (such as 10-bit H.264, HEVC, or DTS audio). External playback is recommended.')
+        setIsBuffering(false)
+      }
+    }, 2000)
+    return () => clearInterval(id)
+  }, [isBuffering, waitingForPieces, isGating, prebuffering, playbackError])
+
   // Live stats ticker (refreshes dropped-frame + resolution reads)
   useEffect(() => {
     if (!showStats) return
@@ -670,6 +692,7 @@ export default function StreamCinemaPlayer({
   useEffect(() => {
     setWaitingForPieces(false)
     setPrebuffering(false)
+    stuckRef.current = { t: 0, at: Date.now() }
     setBufferAhead(0)
     setAudioTracks([])
     setShowAudioMenu(false)
@@ -709,14 +732,22 @@ export default function StreamCinemaPlayer({
   const swarmSlow = !swarmDead && swarmSpeed < 50 * 1024
   const stalled = waitingForPieces || swarmDead || swarmSlow
   const prebufferNeed = Math.min(PREBUFFER_SECONDS, Math.max(0, (duration - currentTime) - 5))
-  const stallMessage = waitingForPieces
-    ? 'Waiting for pieces…'
-    : isGating
-      ? `Preparing stream… ${Math.round(bufferedPercent)}%`
-      : swarmDead
-        ? 'Waiting for peers…'
-        : 'Buffering from Swarm…'
-  const stallHint = waitingForPieces
+  // Data is buffered but no picture: decoder (codec), not swarm, is the problem.
+  const decoderStuck = !isPlaying && !isGating && !prebuffering
+    && bufferAhead >= GATE_SECONDS && (isBuffering || waitingForPieces)
+
+  const stallMessage = decoderStuck
+    ? 'Waiting for decoder…'
+    : waitingForPieces
+      ? 'Waiting for pieces…'
+      : isGating
+        ? `Preparing stream… ${Math.round(bufferedPercent)}%`
+        : swarmDead
+          ? 'Waiting for peers…'
+          : 'Buffering from Swarm…'
+  const stallHint = decoderStuck
+    ? 'Data is buffered but no picture yet — the codec may need VLC. You will be offered external playback automatically if this persists.'
+    : waitingForPieces
     ? 'You jumped ahead of the download — pieces are on the way.'
     : isGating
       ? 'Playback starts automatically with enough buffer.'
