@@ -269,13 +269,13 @@ npm run dev
 # 3. Run unit tests (Range parser, path containment)
 npm test
 
-# 3. Build Bundles
+# 4. Build Bundles
 npm run build
 
-# 4. Verify the WebTorrent native streaming dependency when needed
+# 5. Verify the WebTorrent native streaming dependency when needed
 npm run prepare:native
 
-# 5. Generate Production Installer
+# 6. Generate Production Installer
 npm run dist
 ```
 
