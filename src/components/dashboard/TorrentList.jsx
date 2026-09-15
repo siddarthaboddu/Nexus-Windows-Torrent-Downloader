@@ -60,8 +60,6 @@ const TorrentCard = ({
                 onReverify={onReverify}
             />
 
-            <ProgressBar progress={torrent.progress || 0} />
-
             {expanded && (
                 <TorrentDetails
                     torrent={torrent}
@@ -103,7 +101,7 @@ const TorrentHeader = React.memo(({
     return (
         <>
             <div
-                className="flex justify-between items-start mb-2 cursor-pointer"
+                className="flex justify-between items-start mb-2 cursor-pointer rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 onClick={onToggleExpand}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggleExpand(); } }}
                 role="button"
