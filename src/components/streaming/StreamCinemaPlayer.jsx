@@ -46,6 +46,7 @@ const formatTime = (seconds) => {
 
 const GATE_SECONDS = 12 // start playback only with this much contiguous buffer
 const GATE_TIMEOUT_MS = 45000 // ...or after this long, whichever comes first
+const PREBUFFER_SECONDS = 15 * 60 // opt-in deep buffer: pause and fill this far ahead, then auto-resume
 const RESUME_KEY = (h, i) => `nexus:pos:${h}:${i}`
 
 const loadSavedPosition = (infoHash, fileIndex) => {
@@ -133,6 +134,7 @@ export default function StreamCinemaPlayer({
   const [isBuffering, setIsBuffering] = useState(true)
   const [isGating, setIsGating] = useState(true) // buffer-gated autoplay
   const [waitingForPieces, setWaitingForPieces] = useState(false)
+  const [prebuffering, setPrebuffering] = useState(false) // deep 15-min buffer mode
   const [autoplayNext, setAutoplayNext] = useState(true)
   const [resumeNote, setResumeNote] = useState(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -234,6 +236,51 @@ export default function StreamCinemaPlayer({
     tryPlay()
   }, [tryPlay])
 
+  // Opt-in deep buffer: pause and let the swarm fill up to 15 min ahead of
+  // the playhead, then resume automatically. The torrent keeps downloading
+  // while the video is paused, so this trades one wait for smooth playback.
+  const startPrebuffer = useCallback(() => {
+    const video = videoRef.current
+    if (video) { try { video.pause() } catch { /* already paused */ } }
+    if (gateTimerRef.current) {
+      clearTimeout(gateTimerRef.current)
+      gateTimerRef.current = null
+    }
+    setIsGating(false)
+    setIsBuffering(false)
+    setWaitingForPieces(false)
+    setIsPlaying(false)
+    setPrebuffering(true)
+  }, [])
+
+  const cancelPrebuffer = useCallback(() => {
+    setPrebuffering(false)
+  }, [])
+
+  useEffect(() => {
+    if (!prebuffering) return
+    const id = setInterval(() => {
+      const video = videoRef.current
+      if (!video) return
+      const { ahead, pct } = bufferInfo(video)
+      pushBufferState(ahead, pct, true)
+      const dur = video.duration || 0
+      const remain = dur - video.currentTime
+      const need = Math.min(PREBUFFER_SECONDS, Math.max(0, remain - 5))
+      if (need <= GATE_SECONDS || ahead >= need || pct >= 99) {
+        setPrebuffering(false)
+        const v = videoRef.current
+        if (v) {
+          v.play().then(() => {
+            setIsPlaying(true)
+            setIsBuffering(false)
+          }).catch(() => setIsPlaying(false))
+        }
+      }
+    }, 1000)
+    return () => clearInterval(id)
+  }, [prebuffering, pushBufferState])
+
   const handleTimeUpdate = () => {
     if (!videoRef.current) return
     const video = videoRef.current
@@ -266,7 +313,7 @@ export default function StreamCinemaPlayer({
     const enough = ahead >= GATE_SECONDS
       || pct >= 90
       || (dur > 0 && dur < 30 && pct >= 50)
-    if (isGating && enough && !playbackError) {
+    if (isGating && enough && !playbackError && !prebuffering) {
       ungateAndPlay()
     }
     if (waitingForPieces && isTimeBuffered(video, video.currentTime)) {
@@ -343,6 +390,7 @@ export default function StreamCinemaPlayer({
       videoRef.current.pause()
       setIsPlaying(false)
     } else {
+      setPrebuffering(false) // manual play overrides deep-buffer mode
       videoRef.current.play().then(() => setIsPlaying(true)).catch((e) => {
         console.warn('Playback error:', e)
       })
@@ -621,6 +669,7 @@ export default function StreamCinemaPlayer({
   // Reset per-stream playback state (delay/size prefs survive file switches)
   useEffect(() => {
     setWaitingForPieces(false)
+    setPrebuffering(false)
     setBufferAhead(0)
     setAudioTracks([])
     setShowAudioMenu(false)
@@ -659,7 +708,7 @@ export default function StreamCinemaPlayer({
   const swarmDead = swarmPeers === 0
   const swarmSlow = !swarmDead && swarmSpeed < 50 * 1024
   const stalled = waitingForPieces || swarmDead || swarmSlow
-
+  const prebufferNeed = Math.min(PREBUFFER_SECONDS, Math.max(0, (duration - currentTime) - 5))
   const stallMessage = waitingForPieces
     ? 'Waiting for pieces…'
     : isGating
@@ -771,35 +820,62 @@ export default function StreamCinemaPlayer({
         ))}
       </video>
 
-      {/* Buffering / Gating Indicator */}
-      {(isBuffering || isGating) && !playbackError && (
+      {/* Buffering / Gating / Pre-buffering Indicator */}
+      {(isBuffering || isGating || prebuffering) && !playbackError && (
         <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center bg-black/40 backdrop-blur-xs gap-3">
           <div className="w-16 h-16 rounded-full bg-background/80 backdrop-blur-md flex items-center justify-center shadow-2xl border border-border/50">
             <Loader2 size={32} className="text-primary animate-spin" />
           </div>
-          <p className="text-white text-xs font-semibold tracking-wider uppercase drop-shadow-md bg-black/60 px-3 py-1 rounded-full">
-            {stallMessage}
-          </p>
-          {stallHint && (
-            <p className="text-white/80 text-[11px] drop-shadow-md bg-black/60 px-3 py-1 rounded-full max-w-md text-center">
-              {stallHint}
-            </p>
-          )}
-          {isGating && (
-            <button
-              onClick={ungateAndPlay}
-              className="pointer-events-auto px-4 py-1.5 rounded-full bg-primary hover:bg-blue-600 text-white text-xs font-semibold shadow-lg transition-all active:scale-95"
-            >
-              Play now
-            </button>
-          )}
-          {!isGating && stalled && (
-            <button
-              onClick={() => onOpenExternal(streamData.streamUrl)}
-              className="pointer-events-auto px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold backdrop-blur-md transition-all active:scale-95"
-            >
-              Open in VLC instead
-            </button>
+          {prebuffering ? (
+            <>
+              <p className="text-white text-xs font-semibold tracking-wider uppercase drop-shadow-md bg-black/60 px-3 py-1 rounded-full">
+                Pre-buffering {formatTime(bufferAhead)} / {formatTime(prebufferNeed)}
+              </p>
+              <p className="text-white/80 text-[11px] drop-shadow-md bg-black/60 px-3 py-1 rounded-full max-w-md text-center">
+                The download keeps running while paused — playback resumes automatically at 15 min ahead.
+              </p>
+              <button
+                onClick={cancelPrebuffer}
+                className="pointer-events-auto px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold backdrop-blur-md transition-all active:scale-95"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-white text-xs font-semibold tracking-wider uppercase drop-shadow-md bg-black/60 px-3 py-1 rounded-full">
+                {stallMessage}
+              </p>
+              {stallHint && (
+                <p className="text-white/80 text-[11px] drop-shadow-md bg-black/60 px-3 py-1 rounded-full max-w-md text-center">
+                  {stallHint}
+                </p>
+              )}
+              {isGating && (
+                <button
+                  onClick={ungateAndPlay}
+                  className="pointer-events-auto px-4 py-1.5 rounded-full bg-primary hover:bg-blue-600 text-white text-xs font-semibold shadow-lg transition-all active:scale-95"
+                >
+                  Play now
+                </button>
+              )}
+              {!isGating && stalled && (
+                <div className="flex items-center gap-2 pointer-events-auto">
+                  <button
+                    onClick={startPrebuffer}
+                    className="px-4 py-1.5 rounded-full bg-primary hover:bg-blue-600 text-white text-xs font-semibold shadow-lg transition-all active:scale-95"
+                  >
+                    Pre-buffer 15 min
+                  </button>
+                  <button
+                    onClick={() => onOpenExternal(streamData.streamUrl)}
+                    className="px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-semibold backdrop-blur-md transition-all active:scale-95"
+                  >
+                    Open in VLC instead
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -837,7 +913,7 @@ export default function StreamCinemaPlayer({
       )}
 
       {/* Center Play Button Overlay on Pause */}
-      {!isPlaying && !isBuffering && !playbackError && (
+      {!isPlaying && !isBuffering && !playbackError && !prebuffering && (
         <button
           onClick={togglePlay}
           className="absolute inset-auto w-20 h-20 rounded-full bg-primary/90 hover:bg-primary text-white flex items-center justify-center shadow-2xl shadow-blue-500/50 backdrop-blur-md transition-transform transform hover:scale-110 active:scale-95 z-20"
