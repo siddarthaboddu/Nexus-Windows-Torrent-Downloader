@@ -430,6 +430,14 @@ export class StreamManager {
       throw new Error('Torrent metadata is not ready for the selected file. Please retry.')
     }
 
+    // Drop any seek window left on the previous torrent (before swapping)
+    try {
+      if (this.seekWindow && this.activeTorrent && !this.activeTorrent.destroyed) {
+        this.activeTorrent.deselect(this.seekWindow.start, this.seekWindow.end)
+      }
+    } catch { /* best-effort */ }
+    this.seekWindow = null
+
     this.activeTorrent = torrent
     this.activeFileIndex = selectedIndex
     this.activeFile = targetFile
@@ -530,6 +538,31 @@ export class StreamManager {
         // flags are sticky (never cleared) — marking 10MB on every Range
         // request accumulates until everything is "critical", which defeats
         // prioritization and thrashes the swarm.
+        // Seek-aware window instead: a *removable* high-priority selection
+        // (~50MB) that follows the playback position. Progressive buffering
+        // reuses the same start (no churn); a forward seek jumps start and
+        // moves the window, so the swarm fetches upcoming video first rather
+        // than backfilling the skipped gap. The gap still downloads afterwards
+        // at normal priority via the file-wide selection, so nothing is lost.
+        try {
+          const pieceLen = torrent.pieceLength || 0
+          const fileStartPiece = targetFile._startPiece ?? 0
+          const fileEndPiece = targetFile._endPiece ?? (torrent.pieces ? torrent.pieces.length - 1 : -1)
+          if (pieceLen > 0 && fileEndPiece >= fileStartPiece) {
+            const reqPiece = Math.min(fileEndPiece, Math.max(fileStartPiece,
+              Math.floor(((targetFile.offset || 0) + start) / pieceLen)))
+            const windowPieces = Math.max(4, Math.min(64, Math.ceil((50 * 1024 * 1024) / pieceLen)))
+            const winStart = reqPiece
+            const winEnd = Math.min(fileEndPiece, reqPiece + windowPieces)
+            const prev = this.seekWindow
+            const moved = !prev || Math.abs(winStart - prev.start) > Math.max(4, Math.floor(windowPieces / 4))
+            if (moved && winEnd >= winStart) {
+              if (prev) { try { torrent.deselect(prev.start, prev.end) } catch { /* stale */ } }
+              torrent.select(winStart, winEnd, 1)
+              this.seekWindow = { start: winStart, end: winEnd }
+            }
+          }
+        } catch { /* prioritization is best-effort */ }
         res.writeHead(206, {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Accept-Ranges': 'bytes',
