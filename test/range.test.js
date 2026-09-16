@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseRangeHeader } from '../electron/utils/rangeParser.js'
+import { capRangeLength, parseRangeHeader } from '../electron/utils/rangeParser.js'
 
 describe('parseRangeHeader', () => {
   const SIZE = 1000
@@ -45,5 +45,20 @@ describe('parseRangeHeader', () => {
   it('rejects non-numeric and unsafe integers', () => {
     assert.equal(parseRangeHeader('bytes=abc-def', SIZE), null)
     assert.equal(parseRangeHeader('bytes=0-99999999999999999999', SIZE), null)
+  })
+})
+
+describe('capRangeLength', () => {
+  it('caps an open-ended parsed range while retaining its start', () => {
+    assert.deepEqual(capRangeLength({ start: 125, end: 999 }, 256), { start: 125, end: 380 })
+  })
+
+  it('leaves an already-small range unchanged', () => {
+    assert.deepEqual(capRangeLength({ start: 125, end: 300 }, 256), { start: 125, end: 300 })
+  })
+
+  it('rejects invalid input', () => {
+    assert.throws(() => capRangeLength({ start: 5, end: 4 }, 256), TypeError)
+    assert.throws(() => capRangeLength({ start: 0, end: 5 }, 0), TypeError)
   })
 })

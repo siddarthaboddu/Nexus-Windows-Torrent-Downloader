@@ -3,7 +3,13 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import { app } from 'electron'
-import { parseRangeHeader } from './rangeParser.js'
+import { capRangeLength, parseRangeHeader } from './rangeParser.js'
+
+// Chromium commonly requests `Range: bytes=N-`. Do not hand that unbounded
+// range to WebTorrent: its FileIterator then selects N..EOF at stream
+// priority, which competes with the new location after a forward seek.
+const MAX_STREAM_RANGE_BYTES = 8 * 1024 * 1024
+const STREAM_WINDOW_BYTES = 50 * 1024 * 1024
 
 const VIDEO_EXTENSIONS = new Set([
   'mp4', 'm4v', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'ogv', '3gp'
@@ -453,9 +459,10 @@ export class StreamManager {
       } catch { }
     })
 
-    // Select the target file
+    // Keep a low-priority full-file selection so any skipped region can fill
+    // eventually. The live HTTP range and seek window below take priority.
     try {
-      targetFile.select()
+      targetFile.select(0)
     } catch (e) {
       console.warn('[StreamManager] Error selecting file:', e)
     }
@@ -531,14 +538,17 @@ export class StreamManager {
           res.end()
           return
         }
-        const { start, end } = parsed
+        // Limit every response, including an open-ended `bytes=N-` request.
+        // This prevents a reader from pinning N..EOF at FileIterator's
+        // priority after the player has moved to another timestamp.
+        const { start, end } = capRangeLength(parsed, MAX_STREAM_RANGE_BYTES)
         const chunkSize = (end - start) + 1
         // NOTE: no manual torrent.critical() here. file.createReadStream()
         // already prioritizes its own window via FileIterator, and critical
         // flags are sticky (never cleared) — marking 10MB on every Range
         // request accumulates until everything is "critical", which defeats
         // prioritization and thrashes the swarm.
-        // Seek-aware window instead: a *removable* high-priority selection
+        // Seek-aware window instead: a removable, highest-priority selection
         // (~50MB) that follows the playback position. Progressive buffering
         // reuses the same start (no churn); a forward seek jumps start and
         // moves the window, so the swarm fetches upcoming video first rather
@@ -551,14 +561,16 @@ export class StreamManager {
           if (pieceLen > 0 && fileEndPiece >= fileStartPiece) {
             const reqPiece = Math.min(fileEndPiece, Math.max(fileStartPiece,
               Math.floor(((targetFile.offset || 0) + start) / pieceLen)))
-            const windowPieces = Math.max(4, Math.min(64, Math.ceil((50 * 1024 * 1024) / pieceLen)))
+            const windowPieces = Math.max(4, Math.min(64, Math.ceil(STREAM_WINDOW_BYTES / pieceLen)))
             const winStart = reqPiece
             const winEnd = Math.min(fileEndPiece, reqPiece + windowPieces)
             const prev = this.seekWindow
             const moved = !prev || Math.abs(winStart - prev.start) > Math.max(4, Math.floor(windowPieces / 4))
             if (moved && winEnd >= winStart) {
               if (prev) { try { torrent.deselect(prev.start, prev.end) } catch { /* stale */ } }
-              torrent.select(winStart, winEnd, 1)
+              // FileIterator uses priority 1 for the bounded HTTP response.
+              // The moving playback window must outrank it after a seek.
+              torrent.select(winStart, winEnd, 2)
               this.seekWindow = { start: winStart, end: winEnd }
             }
           }

@@ -39,3 +39,27 @@ export function parseRangeHeader(header, fileSize) {
 
   return { start, end }
 }
+
+/**
+ * Bound a satisfiable range without changing its starting byte.
+ *
+ * Media elements commonly request an open-ended range (`bytes=N-`). Passing
+ * that through to WebTorrent makes FileIterator select every remaining piece
+ * at streaming priority. Serving bounded chunks keeps the swarm focused near
+ * the playhead and lets a later seek replace the old demand.
+ *
+ * @param {{ start: number, end: number }} range inclusive byte range
+ * @param {number} maxLength maximum response length in bytes
+ * @returns {{ start: number, end: number }} inclusive bounded range
+ */
+export function capRangeLength(range, maxLength) {
+  if (!range || !Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end) ||
+    !Number.isSafeInteger(maxLength) || maxLength <= 0 || range.start > range.end) {
+    throw new TypeError('Expected a valid inclusive range and positive maxLength')
+  }
+
+  return {
+    start: range.start,
+    end: Math.min(range.end, range.start + maxLength - 1)
+  }
+}

@@ -45,7 +45,7 @@ const formatTime = (seconds) => {
 }
 
 const GATE_SECONDS = 12 // start playback only with this much contiguous buffer
-const GATE_TIMEOUT_MS = 45000 // ...or after this long, whichever comes first
+const REBUFFER_LOW_WATER_SECONDS = 3 // pause before Chromium starts stuttering
 const PREBUFFER_SECONDS = 15 * 60 // opt-in deep buffer: pause and fill this far ahead, then auto-resume
 const RESUME_KEY = (h, i) => `nexus:pos:${h}:${i}`
 
@@ -118,7 +118,6 @@ export default function StreamCinemaPlayer({
   const videoRef = useRef(null)
   const containerRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
-  const gateTimerRef = useRef(null)
   const savePosRef = useRef(0)
   const lastUiBufferRef = useRef({ ahead: 0, pct: 0, at: 0 })
   const stuckRef = useRef({ t: 0, at: 0 }) // last playback-progress timestamp (decoder watchdog)
@@ -228,10 +227,6 @@ export default function StreamCinemaPlayer({
   }, [])
 
   const ungateAndPlay = useCallback(() => {
-    if (gateTimerRef.current) {
-      clearTimeout(gateTimerRef.current)
-      gateTimerRef.current = null
-    }
     setIsGating(false)
     setWaitingForPieces(false)
     tryPlay()
@@ -243,10 +238,6 @@ export default function StreamCinemaPlayer({
   const startPrebuffer = useCallback(() => {
     const video = videoRef.current
     if (video) { try { video.pause() } catch { /* already paused */ } }
-    if (gateTimerRef.current) {
-      clearTimeout(gateTimerRef.current)
-      gateTimerRef.current = null
-    }
     setIsGating(false)
     setIsBuffering(false)
     setWaitingForPieces(false)
@@ -367,12 +358,23 @@ export default function StreamCinemaPlayer({
       setAudioTracks([])
     }
 
-    // Fallback: never gate longer than the timeout
-    if (gateTimerRef.current) clearTimeout(gateTimerRef.current)
-    gateTimerRef.current = setTimeout(() => {
-      gateTimerRef.current = null
-      ungateAndPlay()
-    }, GATE_TIMEOUT_MS)
+  }
+
+  const handleWaiting = () => {
+    const video = videoRef.current
+    setIsBuffering(true)
+    if (!video || isGating || prebuffering) return
+
+    const { ahead } = bufferInfo(video)
+    if (ahead >= REBUFFER_LOW_WATER_SECONDS) return
+
+    // Chromium would otherwise resume on the first arriving piece, creating
+    // a play/stall loop. Hold at the playhead and reuse the normal 12-second
+    // gate; the explicit Play now control remains available as an override.
+    try { video.pause() } catch { /* already paused by the media element */ }
+    setIsPlaying(false)
+    setIsGating(true)
+    setWaitingForPieces(true)
   }
 
   const handleEnded = () => {
@@ -697,12 +699,6 @@ export default function StreamCinemaPlayer({
     setAudioTracks([])
     setShowAudioMenu(false)
     setResumeNote(null)
-    return () => {
-      if (gateTimerRef.current) {
-        clearTimeout(gateTimerRef.current)
-        gateTimerRef.current = null
-      }
-    }
   }, [streamData?.streamUrl])
 
   const selectAudioTrack = (index) => {
@@ -820,16 +816,12 @@ export default function StreamCinemaPlayer({
         onProgress={handleProgress}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
-        onWaiting={() => setIsBuffering(true)}
+        onWaiting={handleWaiting}
         onPlaying={() => {
           setIsBuffering(false)
           setPlaybackError(null)
           setIsGating(false)
           setWaitingForPieces(false)
-          if (gateTimerRef.current) {
-            clearTimeout(gateTimerRef.current)
-            gateTimerRef.current = null
-          }
         }}
         onError={(e) => {
           console.warn('[VideoPlayer] Playback Error:', e)
