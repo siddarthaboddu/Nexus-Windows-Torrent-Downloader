@@ -19,6 +19,10 @@ export default function StreamTelemetryBar({
   const downloadSpeedFormatted = stats.downloadSpeed ? `${formatBytes(stats.downloadSpeed)}/s` : '0 KB/s'
   const uploadSpeedFormatted = stats.uploadSpeed ? `${formatBytes(stats.uploadSpeed)}/s` : '0 KB/s'
   const percentBuffered = Math.min(Math.round((stats.progress || 0) * 100), 100)
+  const isLocal = Boolean(stats.local)
+  const peerDetail = stats.numPeers
+    ? `${stats.seeders || 0} seed · ${stats.unchokedPeers || 0} unchoked${stats.queuedPeers ? ` · ${stats.queuedPeers} queued` : ''}`
+    : 'No live peers'
 
   return (
     <div className="glass-panel px-4 py-3 rounded-2xl border border-border/80 shadow-xl flex flex-wrap items-center justify-between gap-4 backdrop-blur-xl bg-background/80">
@@ -46,14 +50,16 @@ export default function StreamTelemetryBar({
           </div>
         </div>
 
-        {/* Peers */}
+        {/* Active connections — discovered/queued peers are intentionally
+            separate from the established WebTorrent wire count. */}
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center border border-purple-500/20">
             <Users size={15} />
           </div>
           <div>
-            <div className="text-muted-foreground text-[10px] font-medium uppercase">Peers</div>
-            <div className="font-mono font-bold text-purple-400">{stats.numPeers || 0}</div>
+            <div className="text-muted-foreground text-[10px] font-medium uppercase">{isLocal ? 'Source' : 'Peers'}</div>
+            <div className="font-mono font-bold text-purple-400">{isLocal ? 'Local disk' : (stats.numPeers || 0)}</div>
+            {!isLocal && <div className="text-[9px] text-muted-foreground whitespace-nowrap">{peerDetail}</div>}
           </div>
         </div>
 

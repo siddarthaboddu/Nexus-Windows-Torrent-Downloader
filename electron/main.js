@@ -1482,12 +1482,18 @@ function setupIpcHandlers() {
 
   // --- Live Video Streaming Feature Handlers ---
   ipcMain.handle('stream-parse-torrent', async (event, source) => {
-    if (!streamManager) streamManager = new StreamManager(() => client)
+    if (!streamManager) streamManager = new StreamManager(
+      () => client,
+      (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null
+    )
     return await streamManager.parseTorrent(source)
   })
 
   ipcMain.handle('stream-start', async (event, { infoHash, fileIndex }) => {
-    if (!streamManager) streamManager = new StreamManager(() => client)
+    if (!streamManager) streamManager = new StreamManager(
+      () => client,
+      (hash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (hash || '').toLowerCase()) || null
+    )
     return await streamManager.startStreaming(infoHash, fileIndex)
   })
 
@@ -1896,7 +1902,10 @@ app.whenReady().then(async () => {
 
   // Clean leftover temp streaming cache from previous sessions
   try {
-    if (!streamManager) streamManager = new StreamManager(() => client)
+    if (!streamManager) streamManager = new StreamManager(
+      () => client,
+      (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null
+    )
     streamManager.cleanTempCache()
   } catch (e) {
     console.warn('[Startup] Failed to clean stream temp cache:', e)

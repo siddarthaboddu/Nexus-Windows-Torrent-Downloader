@@ -722,10 +722,11 @@ export default function StreamCinemaPlayer({
   }
 
   // Slow-swarm + stall messaging from existing telemetry
+  const isLocalStream = Boolean(streamStats.local)
   const swarmSpeed = streamStats.downloadSpeed || 0
   const swarmPeers = streamStats.numPeers || 0
-  const swarmDead = swarmPeers === 0
-  const swarmSlow = !swarmDead && swarmSpeed < 50 * 1024
+  const swarmDead = !isLocalStream && swarmPeers === 0
+  const swarmSlow = !isLocalStream && !swarmDead && swarmSpeed < 50 * 1024
   const stalled = waitingForPieces || swarmDead || swarmSlow
   const prebufferNeed = Math.min(PREBUFFER_SECONDS, Math.max(0, (duration - currentTime) - 5))
   // Data is buffered but no picture: decoder (codec), not swarm, is the problem.

@@ -302,7 +302,7 @@ This command:
 3. Select a video file once its metadata loads — playback starts automatically with enough buffer.
 4. Use subtitles from the CC menu (sidecar tracks, sync offset, or your own upload), the Files drawer for episodes, and **Stop & Clean Up** when finished.
 
-Streaming uses a separate, ephemeral WebTorrent client. It does not add the torrent to the persistent downloads list unless you explicitly choose to save it (already-streamed bytes are carried over). Playback is fetched in bounded ranges, so jumping forward shifts swarm priority to the new timestamp instead of continuing to prioritize the beginning of the file.
+Streaming uses a separate, ephemeral WebTorrent client. It does not add the torrent to the persistent downloads list unless you explicitly choose to save it (already-streamed bytes are carried over). Selecting a completed transfer streams its verified local files directly, with no swarm dependency. Playback from the swarm is fetched in bounded ranges, so jumping forward shifts priority to the new timestamp instead of continuing to prioritize the beginning of the file.
 
 ### Searching Torrents
 

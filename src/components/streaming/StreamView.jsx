@@ -119,7 +119,7 @@ export default function StreamView({ activeTorrents = [], streamRequest }) {
             stats={streamStats}
             streamData={streamData}
             onOpenExternal={openExternal}
-            onPromoteToDownload={handlePromote}
+            onPromoteToDownload={streamData.isLocal ? undefined : handlePromote}
             onStop={stopStream}
           />
 

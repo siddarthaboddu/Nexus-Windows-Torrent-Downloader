@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import { app } from 'electron'
 import { capRangeLength, parseRangeHeader } from './rangeParser.js'
+import { resolveWithinRoot } from './safePath.js'
 
 // Chromium commonly requests `Range: bytes=N-`. Do not hand that unbounded
 // range to WebTorrent: its FileIterator then selects N..EOF at stream
@@ -139,16 +140,20 @@ const MIME_TYPES = {
 }
 
 export class StreamManager {
-  constructor(getMainClient) {
+  constructor(getMainClient, getManagedTorrent = null) {
     this.getMainClient = getMainClient
+    this.getManagedTorrent = getManagedTorrent
     this.streamClient = null
     this.httpServer = null
     this.serverPort = null
     this.activeTorrent = null // Torrent currently being streamed
     this.activeFileIndex = null
     this.activeFile = null
+    this.activeInfoHash = null
+    this.activeLocalStream = null
     this.activeStream = null // Current active read stream if any
     this.parsedTorrents = new Map() // infoHash -> the instance used for metadata selection
+    this.parsedLocalStreams = new Map() // infoHash -> verified files already on disk
     this.parsedAt = new Map() // infoHash -> Date.now() of parse, for stale-entry eviction
     // Sweep parsed-but-never-streamed torrents so abandoned picks stop
     // consuming swarm handles and temp disk. Runs every 5 minutes.
@@ -179,7 +184,88 @@ export class StreamManager {
     const hash = (infoHash || '').toLowerCase()
     if (!hash) return
     this.parsedTorrents.delete(hash)
+    this.parsedLocalStreams.delete(hash)
     this.parsedAt.delete(hash)
+  }
+
+  getInfoHashFromSource(source) {
+    if (typeof source !== 'string') return null
+    const magnetMatch = source.match(/xt=urn:btih:([a-zA-Z0-9]+)/i)
+    if (magnetMatch) return magnetMatch[1].toLowerCase()
+    const candidate = source.trim().toLowerCase()
+    return /^[a-f0-9]{40}$/.test(candidate) ? candidate : null
+  }
+
+  /**
+   * Return a streamable, fully verified local torrent record when the Stream
+   * tab was opened from a completed/paused transfer. Paused persistent
+   * torrents are deliberately removed from the main WebTorrent client, so
+   * falling through to the ephemeral client here would download the same
+   * files from the swarm again.
+   */
+  async findVerifiedLocalStream(source) {
+    const infoHash = this.getInfoHashFromSource(source)
+    if (!infoHash || !this.getManagedTorrent) return null
+
+    const managed = this.getManagedTorrent(infoHash)
+    if (!managed || !(managed.done || Number(managed.progress) >= 1) || !managed.path) return null
+
+    const files = Array.isArray(managed.files) ? managed.files : []
+    if (files.length === 0) return null
+
+    const verifiedFiles = []
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index]
+      const relativePath = file?.path || file?.name
+      const length = Number(file?.length)
+      if (!relativePath || !Number.isSafeInteger(length) || length < 0) return null
+
+      const localPath = resolveWithinRoot(managed.path, relativePath)
+      if (!localPath) return null
+      try {
+        const stat = await fs.stat(localPath)
+        if (!stat.isFile() || stat.size !== length) return null
+      } catch {
+        return null
+      }
+
+      const name = file.name || path.basename(relativePath)
+      const extension = path.extname(name).toLowerCase().replace('.', '')
+      const isSubtitle = this.isSubtitleFile(name)
+      const lang = isSubtitle ? detectSubtitleLang(name) : null
+      verifiedFiles.push({
+        index: Number.isInteger(file.index) ? file.index : index,
+        name,
+        path: relativePath,
+        localPath,
+        length,
+        isVideo: this.isVideoFile(name),
+        isSubtitle,
+        subtitleLang: lang?.code || null,
+        subtitleLabel: lang?.label || null,
+        extension
+      })
+    }
+
+    return {
+      infoHash,
+      name: managed.name || 'Local Torrent',
+      magnetURI: managed.magnetURI,
+      length: Number(managed.length) || verifiedFiles.reduce((sum, file) => sum + file.length, 0),
+      files: verifiedFiles
+    }
+  }
+
+  formatLocalStreamMetadata(localStream) {
+    return {
+      infoHash: localStream.infoHash,
+      name: localStream.name,
+      magnetURI: localStream.magnetURI,
+      length: localStream.length,
+      numPeers: 0,
+      isLocal: true,
+      files: localStream.files.map(({ localPath: _localPath, ...file }) => file)
+    }
   }
 
   async evictStaleParsed() {
@@ -200,7 +286,7 @@ export class StreamManager {
       } catch (e) {
         console.warn('[StreamManager] Eviction failed:', e.message)
       }
-      await this.cleanTempCache(hash)
+      if (t) await this.cleanTempCache(hash)
     }
   }
 
@@ -286,6 +372,15 @@ export class StreamManager {
    * Returns torrent summary and list of all files with video indicators.
    */
   async parseTorrent(source) {
+    // Completed local transfers are the fastest and most reliable stream
+    // source. Prefer them before looking for a live swarm.
+    const localStream = await this.findVerifiedLocalStream(source)
+    if (localStream) {
+      this.parsedLocalStreams.set(localStream.infoHash, localStream)
+      this.parsedAt.set(localStream.infoHash, Date.now())
+      return this.formatLocalStreamMetadata(localStream)
+    }
+
     // Check if main client already has this torrent
     const mainClient = this.getMainClient?.()
     let existingTorrent = null
@@ -392,33 +487,36 @@ export class StreamManager {
    */
   async startStreaming(infoHash, fileIndex = 0) {
     const normHash = (infoHash || '').toLowerCase()
+    const localStream = this.parsedLocalStreams.get(normHash) || null
 
     // 1. Use the exact instance that supplied the file picker. A matching
     // persistent torrent can exist without its metadata/files being ready.
     let torrent = null
     this.isUsingMainClient = false
 
-    const mainClient = this.getMainClient?.()
-    const parsedTorrent = this.parsedTorrents.get(normHash)
-    if (parsedTorrent && !parsedTorrent.destroyed) {
-      torrent = parsedTorrent
-      this.isUsingMainClient = Boolean(mainClient && mainClient.get(normHash) === torrent)
-    }
+    if (!localStream) {
+      const mainClient = this.getMainClient?.()
+      const parsedTorrent = this.parsedTorrents.get(normHash)
+      if (parsedTorrent && !parsedTorrent.destroyed) {
+        torrent = parsedTorrent
+        this.isUsingMainClient = Boolean(mainClient && mainClient.get(normHash) === torrent)
+      }
 
-    if (!torrent) {
-      const streamClient = await this.getStreamClient()
-      torrent = streamClient.get(normHash)
-    }
+      if (!torrent) {
+        const streamClient = await this.getStreamClient()
+        torrent = streamClient.get(normHash)
+      }
 
-    if (!torrent && mainClient) {
-      const mainTorrent = mainClient.get(normHash)
-      if (mainTorrent?.metadata && mainTorrent.files?.length) {
-        torrent = mainTorrent
-        this.isUsingMainClient = true
+      if (!torrent && mainClient) {
+        const mainTorrent = mainClient.get(normHash)
+        if (mainTorrent?.metadata && mainTorrent.files?.length) {
+          torrent = mainTorrent
+          this.isUsingMainClient = true
+        }
       }
     }
 
-    if (!torrent) {
+    if (!localStream && !torrent) {
       throw new Error(`Torrent with infoHash ${normHash} was not found in streaming engine.`)
     }
 
@@ -431,7 +529,7 @@ export class StreamManager {
       throw new Error('Invalid stream file selection.')
     }
 
-    const targetFile = torrent.files?.[selectedIndex]
+    const targetFile = localStream?.files?.find(file => file.index === selectedIndex) || torrent?.files?.[selectedIndex]
     if (!targetFile) {
       throw new Error('Torrent metadata is not ready for the selected file. Please retry.')
     }
@@ -447,34 +545,42 @@ export class StreamManager {
     this.activeTorrent = torrent
     this.activeFileIndex = selectedIndex
     this.activeFile = targetFile
+    this.activeInfoHash = normHash
+    this.activeLocalStream = localStream
 
-    // 4. Prioritize piece downloading for the chosen file
-    // Keep tiny sidecar subtitle files selected so they download
-    // alongside the video; deselect everything else.
-    torrent.files.forEach((f, idx) => {
-      if (idx === selectedIndex) return
+    if (torrent) {
+      // 4. Prioritize piece downloading for the chosen file
+      // Keep tiny sidecar subtitle files selected so they download
+      // alongside the video; deselect everything else.
+      torrent.files.forEach((f, idx) => {
+        if (idx === selectedIndex) return
+        try {
+          if (this.isSubtitleFile(f.name)) f.select()
+          else f.deselect()
+        } catch { }
+      })
+
+      // Keep a low-priority full-file selection so any skipped region can fill
+      // eventually. The live HTTP range and seek window below take priority.
       try {
-        if (this.isSubtitleFile(f.name)) f.select()
-        else f.deselect()
+        targetFile.select(0)
+      } catch (e) {
+        console.warn('[StreamManager] Error selecting file:', e)
+      }
+
+      // Playback needs pieces in order; the shared main-client torrent may be
+      // on rarest-first for raw speed, so force sequential for the stream.
+      try {
+        torrent.strategy = 'sequential'
       } catch { }
-    })
-
-    // Keep a low-priority full-file selection so any skipped region can fill
-    // eventually. The live HTTP range and seek window below take priority.
-    try {
-      targetFile.select(0)
-    } catch (e) {
-      console.warn('[StreamManager] Error selecting file:', e)
     }
-
-    // Playback needs pieces in order; the shared main-client torrent may be
-    // on rarest-first for raw speed, so force sequential for the stream.
-    try {
-      torrent.strategy = 'sequential'
-    } catch { }
 
     // 5. Start HTTP Range 206 Streaming Server
     const mimeType = this.getMimeType(targetFile.name)
+    const localFilePath = localStream ? targetFile.localPath : null
+    const createVideoReadStream = (options = undefined) => (
+      localFilePath ? fsSync.createReadStream(localFilePath, options) : targetFile.createReadStream(options)
+    )
 
     const server = http.createServer(async (req, res) => {
       // CORS: same-origin page loads need no header, but <track> fetches run
@@ -498,15 +604,21 @@ export class StreamManager {
       // --- Sidecar subtitle route: /subtitles/:fileIndex -> converted WebVTT ---
       if (reqUrl.startsWith('/subtitles/')) {
         const subIndex = Number(reqUrl.slice('/subtitles/'.length))
-        const subFile = Number.isInteger(subIndex) ? torrent.files?.[subIndex] : null
+        const subFile = Number.isInteger(subIndex)
+          ? (localStream?.files?.find(file => file.index === subIndex) || torrent?.files?.[subIndex])
+          : null
         if (!subFile || !this.isSubtitleFile(subFile.name)) {
           res.writeHead(404, { 'Content-Type': 'text/plain' })
           res.end('Subtitle not found')
           return
         }
-        try { subFile.select() } catch { }
+        if (torrent) {
+          try { subFile.select() } catch { }
+        }
         try {
-          const raw = await readTorrentFileText(subFile)
+          const raw = localStream
+            ? await fs.readFile(subFile.localPath, 'utf8')
+            : await readTorrentFileText(subFile)
           const ext = path.extname(subFile.name).toLowerCase().replace('.', '')
           const vtt = convertSubtitleToVtt(raw, ext)
           const body = Buffer.from(vtt, 'utf8')
@@ -554,27 +666,29 @@ export class StreamManager {
         // moves the window, so the swarm fetches upcoming video first rather
         // than backfilling the skipped gap. The gap still downloads afterwards
         // at normal priority via the file-wide selection, so nothing is lost.
-        try {
-          const pieceLen = torrent.pieceLength || 0
-          const fileStartPiece = targetFile._startPiece ?? 0
-          const fileEndPiece = targetFile._endPiece ?? (torrent.pieces ? torrent.pieces.length - 1 : -1)
-          if (pieceLen > 0 && fileEndPiece >= fileStartPiece) {
-            const reqPiece = Math.min(fileEndPiece, Math.max(fileStartPiece,
-              Math.floor(((targetFile.offset || 0) + start) / pieceLen)))
-            const windowPieces = Math.max(4, Math.min(64, Math.ceil(STREAM_WINDOW_BYTES / pieceLen)))
-            const winStart = reqPiece
-            const winEnd = Math.min(fileEndPiece, reqPiece + windowPieces)
-            const prev = this.seekWindow
-            const moved = !prev || Math.abs(winStart - prev.start) > Math.max(4, Math.floor(windowPieces / 4))
-            if (moved && winEnd >= winStart) {
-              if (prev) { try { torrent.deselect(prev.start, prev.end) } catch { /* stale */ } }
-              // FileIterator uses priority 1 for the bounded HTTP response.
-              // The moving playback window must outrank it after a seek.
-              torrent.select(winStart, winEnd, 2)
-              this.seekWindow = { start: winStart, end: winEnd }
+        if (torrent) {
+          try {
+            const pieceLen = torrent.pieceLength || 0
+            const fileStartPiece = targetFile._startPiece ?? 0
+            const fileEndPiece = targetFile._endPiece ?? (torrent.pieces ? torrent.pieces.length - 1 : -1)
+            if (pieceLen > 0 && fileEndPiece >= fileStartPiece) {
+              const reqPiece = Math.min(fileEndPiece, Math.max(fileStartPiece,
+                Math.floor(((targetFile.offset || 0) + start) / pieceLen)))
+              const windowPieces = Math.max(4, Math.min(64, Math.ceil(STREAM_WINDOW_BYTES / pieceLen)))
+              const winStart = reqPiece
+              const winEnd = Math.min(fileEndPiece, reqPiece + windowPieces)
+              const prev = this.seekWindow
+              const moved = !prev || Math.abs(winStart - prev.start) > Math.max(4, Math.floor(windowPieces / 4))
+              if (moved && winEnd >= winStart) {
+                if (prev) { try { torrent.deselect(prev.start, prev.end) } catch { /* stale */ } }
+                // FileIterator uses priority 1 for the bounded HTTP response.
+                // The moving playback window must outrank it after a seek.
+                torrent.select(winStart, winEnd, 2)
+                this.seekWindow = { start: winStart, end: winEnd }
+              }
             }
-          }
-        } catch { /* prioritization is best-effort */ }
+          } catch { /* prioritization is best-effort */ }
+        }
         res.writeHead(206, {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
           'Accept-Ranges': 'bytes',
@@ -585,7 +699,7 @@ export class StreamManager {
           'Expires': '0'
         })
 
-        const stream = targetFile.createReadStream({ start, end })
+        const stream = createVideoReadStream({ start, end })
         stream.pipe(res)
 
         req.on('close', () => stream.destroy())
@@ -609,7 +723,7 @@ export class StreamManager {
           'Expires': '0'
         })
 
-        const stream = targetFile.createReadStream()
+        const stream = createVideoReadStream()
         stream.pipe(res)
 
         req.on('close', () => stream.destroy())
@@ -638,8 +752,8 @@ export class StreamManager {
     })
 
     const baseUrl = `http://127.0.0.1:${this.serverPort}`
-    const subtitles = (torrent.files || [])
-      .map((f, idx) => ({ f, idx }))
+    const subtitles = (localStream?.files || torrent?.files || [])
+      .map((f, idx) => ({ f, idx: localStream ? f.index : idx }))
       .filter(({ f }) => this.isSubtitleFile(f.name))
       .map(({ f, idx }) => {
         const lang = detectSubtitleLang(f.name)
@@ -660,6 +774,7 @@ export class StreamManager {
       infoHash: normHash,
       mimeType,
       subtitles,
+      isLocal: Boolean(localStream),
       isExternalPlayerFriendly: !['mp4', 'webm'].includes(path.extname(targetFile.name).toLowerCase().replace('.', ''))
     }
   }
@@ -698,11 +813,13 @@ export class StreamManager {
 
     const torrent = this.activeTorrent
     const isUsingMain = this.isUsingMainClient
-    const hash = (torrent?.infoHash || '').toLowerCase()
+    const hash = this.activeInfoHash || (torrent?.infoHash || '').toLowerCase()
 
     this.activeTorrent = null
     this.activeFile = null
     this.activeFileIndex = null
+    this.activeInfoHash = null
+    this.activeLocalStream = null
     this.isUsingMainClient = false
     if (hash) this.untrackParsed(hash)
 
@@ -725,7 +842,7 @@ export class StreamManager {
    * Get real-time streaming telemetry
    */
   getStatus() {
-    if (!this.activeTorrent || !this.httpServer) {
+    if ((!this.activeTorrent && !this.activeLocalStream) || !this.httpServer) {
       return {
         active: false,
         downloadSpeed: 0,
@@ -741,6 +858,26 @@ export class StreamManager {
     const t = this.activeTorrent
     const f = this.activeFile
 
+    if (this.activeLocalStream) {
+      return {
+        active: true,
+        local: true,
+        infoHash: this.activeInfoHash,
+        fileName: f?.name || this.activeLocalStream.name,
+        downloadSpeed: 0,
+        uploadSpeed: 0,
+        numPeers: 0,
+        seeders: 0,
+        unchokedPeers: 0,
+        queuedPeers: 0,
+        progress: 1,
+        downloaded: f?.length || 0,
+        length: f?.length || 0,
+        timeRemaining: 0,
+        streamUrl: `http://127.0.0.1:${this.serverPort}/stream`
+      }
+    }
+
     const targetLength = f?.length || t.length || 0
     const downloaded = f?.downloaded || t.downloaded || 0
     const progress = targetLength > 0 ? (downloaded / targetLength) : 0
@@ -752,6 +889,9 @@ export class StreamManager {
       downloadSpeed: t.downloadSpeed || 0,
       uploadSpeed: t.uploadSpeed || 0,
       numPeers: t.numPeers || 0,
+      seeders: (t.wires || []).filter(wire => wire.isSeeder).length,
+      unchokedPeers: (t.wires || []).filter(wire => !wire.peerChoking).length,
+      queuedPeers: Math.max(0, t._numQueued || 0),
       progress,
       downloaded,
       length: targetLength,
