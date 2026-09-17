@@ -5,7 +5,6 @@ import Settings from './components/dashboard/Settings'
 import AddTorrentModal from './components/modals/AddTorrentModal'
 import DeleteTorrentModal from './components/modals/DeleteTorrentModal'
 import StreamView from './components/streaming/StreamView'
-import SearchView from './components/search/SearchView'
 import { useTorrents } from './hooks/useTorrents'
 import { Plus } from 'lucide-react'
 
@@ -36,7 +35,6 @@ function App() {
   const [initialMagnet, setInitialMagnet] = useState('')
   const [initialFile, setInitialFile] = useState(null)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
-  const [streamRequest, setStreamRequest] = useState(null) // { magnet, ts } from Search
 
   const torrentsRef = useRef(torrents)
   useEffect(() => {
@@ -222,8 +220,7 @@ function App() {
               {activeTab === 'dashboard' ? 'Overview' :
                 activeTab === 'transfers' ? 'Active Transfers' :
                   activeTab === 'stream' ? 'Stream Video' :
-                    activeTab === 'search' ? 'Search Torrents' :
-                      'Settings'}
+                    'Settings'}
             </h2>
 
             <button
@@ -316,20 +313,8 @@ function App() {
           )}
 
           <div className={activeTab === 'stream' ? 'block animate-in slide-in-from-bottom-5 duration-500' : 'hidden'}>
-            <StreamView activeTorrents={torrents} streamRequest={streamRequest} />
+            <StreamView activeTorrents={torrents} />
           </div>
-
-          {activeTab === 'search' && (
-            <div className="animate-in slide-in-from-bottom-5 duration-500">
-              <SearchView
-                defaultPath={defaultPath}
-                onStreamMagnet={(magnet) => {
-                  setStreamRequest({ magnet, ts: Date.now() })
-                  setActiveTab('stream')
-                }}
-              />
-            </div>
-          )}
 
           {activeTab === 'settings' && (
             <Settings />

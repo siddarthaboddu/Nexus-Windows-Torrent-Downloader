@@ -192,7 +192,6 @@ Nexus-Windows-Torrent-Downloader/
 - **Speed scheduler**: daily time window (supports overnight) with its own caps, evaluated every 30s and on config change, falling back to configured limits outside the window.
 - **Watch folder**: `fs.watch` on a user folder auto-adds dropped `.torrent` files (stable-size check, archived to `processed/`).
 - **Disk safety**: `add-torrent` rejects when free space < payload size (`check-disk-space`); optional completed-folder auto-move with re-seed from the new path.
-- **Built-in search**: `SearchView` (General via Apibay, Movies via YTS) with per-row Download / Stream handoff to the Stream tab.
 - **Other-device playback**: cinema-player Cast menu (copy URL, open externally, LAN URL via `get-lan-ip`); optional LAN sharing binds the stream server to `0.0.0.0` for the next stream.
 - **Swarm health**: Add dialog reuses `stream-parse-torrent` for an early peers/size/files reading with a Healthy/Fair/Weak badge.
 
@@ -248,7 +247,6 @@ Nexus-Windows-Torrent-Downloader/
 | `stream-open-external` | Renderer → Main (Invoke) | `url: string` | Opens streaming URL in external player (e.g., VLC) |
 | `stream-promote-to-download` | Renderer → Main (Invoke) | `{ destinationPath: string }` | Converts live stream torrent into permanent background download |
 | `set-torrent-strategy` | Renderer → Main (Invoke) | `infoHash: string, strategy: 'sequential' \| 'rarest'` | Switches per-torrent piece selection strategy (persisted) |
-| `search-torrents` | Renderer → Main (Invoke) | `{ query: string, provider: 'apibay' \| 'yts' }` | Searches public indexes, returns name/size/seeders/magnet rows |
 | `get-lan-ip` | Renderer → Main (Invoke) | None | Returns first external IPv4 for other-device stream playback |
 
 ---

@@ -33,7 +33,7 @@ A modern, beautiful, and feature-rich torrent client built with Electron, React,
 ## ✨ Features
 
 ### Core Functionality
-- **Torrent Management**: Add torrents via magnet links, `.torrent` files, or URLs — plus a built-in **Search** tab (general + movies) with per-row Download / Stream actions
+- **Torrent Management**: Add torrents via magnet links, `.torrent` files, or URLs
 - **Download Control**: Pause, resume, and remove torrents with ease
 - **Swarm Health**: Peer/size/file preview with a Healthy/Fair/Weak badge before you add
 - **Download Strategy**: Per-torrent Sequential (preview-friendly) vs Rarest-first piece selection
@@ -304,10 +304,6 @@ This command:
 
 Streaming uses a separate, ephemeral WebTorrent client. It does not add the torrent to the persistent downloads list unless you explicitly choose to save it (already-streamed bytes are carried over). Selecting a completed transfer streams its verified local files directly, with no swarm dependency. Playback from the swarm is fetched in bounded ranges, so jumping forward shifts priority to the new timestamp instead of continuing to prioritize the beginning of the file.
 
-### Searching Torrents
-
-Select **Search** from the sidebar, pick General or Movies, and run a query. Each row shows seeders, size, and source, with one-click **Download** (to your default folder) or **Stream** (hands the magnet to the Stream tab).
-
 ### Monitoring Progress
 
 The dashboard displays:
@@ -410,8 +406,6 @@ nexus/
 │   │   │   ├── StreamFilePicker.jsx
 │   │   │   ├── StreamTelemetryBar.jsx
 │   │   │   └── TorrentSourceInput.jsx
-│   │   └── search/          # Built-in torrent search
-│   │       └── SearchView.jsx
 │   ├── contexts/            # React contexts
 │   ├── hooks/               # Custom React hooks
 │   │   ├── useTorrents.js

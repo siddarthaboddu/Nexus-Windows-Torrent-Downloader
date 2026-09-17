@@ -58,8 +58,8 @@ async function saveLastDownloadPath(downloadPath) {
   }
 }
 
-// Open trackers injected as client defaults so every torrent — user magnets,
-// .torrent files, and search results — discovers more peers without rewriting
+// Open trackers injected as client defaults so every torrent — user magnets
+// and .torrent files — discovers more peers without rewriting
 // the magnet itself (WebTorrent merges client.tracker.announce automatically).
 const OPEN_TRACKERS = [
   'udp://tracker.opentrackr.org:1337/announce',
@@ -1574,85 +1574,6 @@ function setupIpcHandlers() {
         resolve({ success: true, infoHash: normHash })
       })
     })
-  })
-
-  // --- Built-in Torrent Search (public sources, rendered in SearchView) ---
-  const PUBLIC_TRACKERS = OPEN_TRACKERS
-
-  function buildSearchMagnet(infoHash, name) {
-    const tr = PUBLIC_TRACKERS.map(t => `&tr=${encodeURIComponent(t)}`).join('')
-    return `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(name || infoHash)}${tr}`
-  }
-
-  function parseSizeToBytes(str) {
-    const m = String(str || '').trim().match(/^([\d.]+)\s*([KMGT]i?B|B)$/i)
-    if (!m) return 0
-    const units = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 }
-    const unit = m[2].toUpperCase().replace('IB', 'B')
-    return Math.round(parseFloat(m[1]) * (units[unit] || 0))
-  }
-
-  async function fetchJson(url, timeoutMs = 15000) {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
-    try {
-      const res = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'NexusTorrent/1.0' } })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      return await res.json()
-    } finally {
-      clearTimeout(timer)
-    }
-  }
-
-  ipcMain.handle('search-torrents', async (event, { query, provider }) => {
-    const q = String(query || '').trim()
-    if (q.length < 2) throw new Error('Enter at least 2 characters to search')
-    const prov = provider === 'yts' ? 'yts' : 'apibay'
-
-    try {
-      if (prov === 'yts') {
-        const data = await fetchJson(`https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(q)}&limit=20&sort_by=like_count&order_by=desc`)
-        const movies = data?.data?.movies || []
-        const out = []
-        movies.forEach(m => {
-          (m.torrents || []).forEach(t => {
-            if (!t.hash) return
-            const name = `${m.title_english || m.title} (${m.year}) [${t.quality}]`
-            out.push({
-              provider: 'yts',
-              name,
-              size: parseSizeToBytes(t.size),
-              sizeStr: t.size || '',
-              seeders: t.seeds || 0,
-              leechers: t.peers || 0,
-              infoHash: String(t.hash).toLowerCase(),
-              magnet: buildSearchMagnet(t.hash, name)
-            })
-          })
-        })
-        return out
-      }
-
-      const data = await fetchJson(`https://apibay.org/q.php?q=${encodeURIComponent(q)}`)
-      if (!Array.isArray(data)) return []
-      return data.slice(0, 50).map(r => {
-        const name = r.name || 'Unknown'
-        const size = Number(r.size) || 0
-        return {
-          provider: 'apibay',
-          name,
-          size,
-          sizeStr: formatBytes(size),
-          seeders: Number(r.seeders) || 0,
-          leechers: Number(r.leechers) || 0,
-          infoHash: String(r.info_hash || '').toLowerCase(),
-          magnet: buildSearchMagnet(r.info_hash, name)
-        }
-      })
-    } catch (e) {
-      if (e.name === 'AbortError') throw new Error('Search timed out. Check your connection and retry.')
-      throw new Error(`Search failed: ${e.message}`)
-    }
   })
 
   ipcMain.handle('get-lan-ip', async () => {
