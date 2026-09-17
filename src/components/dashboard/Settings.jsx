@@ -40,7 +40,8 @@ const Settings = () => {
                 speedSchedule: cfg.speedSchedule || { enabled: false, start: '22:00', end: '08:00', dlKB: 0, ulKB: 0 },
                 watchFolder: cfg.watchFolder || '',
                 moveCompletedTo: cfg.moveCompletedTo || '',
-                lanSharing: !!cfg.lanSharing
+                lanSharing: !!cfg.lanSharing,
+                maxConns: cfg.maxConns || 1000
             });
         } catch (e) {
             console.error('Failed to load settings:', e);
@@ -292,6 +293,31 @@ const Settings = () => {
                             </div>
                             <p className="text-xs text-muted-foreground mt-2">
                                 Changing the port will restart the connection engine.
+                            </p>
+                        </div>
+
+                        <div className="bg-secondary/20 p-4 rounded-xl border border-border/50">
+                            <label className="block text-sm font-medium text-foreground mb-2">Max Swarm Connections</label>
+                            <div className="flex gap-2">
+                                <input
+                                    type="number"
+                                    min="50"
+                                    max="2000"
+                                    step="50"
+                                    value={config.maxConns || 1000}
+                                    placeholder="e.g. 1000"
+                                    onChange={(e) => setConfig({ ...config, maxConns: parseInt(e.target.value) || 0 })}
+                                    className="flex-1 bg-background/50 border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:border-primary transition-colors"
+                                />
+                                <button
+                                    onClick={() => updateConfig({ maxConns: config.maxConns || 1000 })}
+                                    className="px-3 py-2 bg-primary hover:bg-primary/90 text-white font-medium rounded-lg transition-colors text-sm"
+                                >
+                                    Apply
+                                </button>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-2">
+                                Max concurrent seeds & peers to connect to (default: 1000, max: 2000).
                             </p>
                         </div>
                     </div>

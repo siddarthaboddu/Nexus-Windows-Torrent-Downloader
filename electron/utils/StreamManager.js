@@ -140,9 +140,10 @@ const MIME_TYPES = {
 }
 
 export class StreamManager {
-  constructor(getMainClient, getManagedTorrent = null) {
+  constructor(getMainClient, getManagedTorrent = null, getMaxConns = null) {
     this.getMainClient = getMainClient
     this.getManagedTorrent = getManagedTorrent
+    this.getMaxConns = getMaxConns
     this.streamClient = null
     this.httpServer = null
     this.serverPort = null
@@ -152,6 +153,7 @@ export class StreamManager {
     this.activeInfoHash = null
     this.activeLocalStream = null
     this.activeStream = null // Current active read stream if any
+    this.mainTorrentStreamState = null // Selection/strategy to restore after main-client playback
     this.parsedTorrents = new Map() // infoHash -> the instance used for metadata selection
     this.parsedLocalStreams = new Map() // infoHash -> verified files already on disk
     this.parsedAt = new Map() // infoHash -> Date.now() of parse, for stale-entry eviction
@@ -166,6 +168,14 @@ export class StreamManager {
     // Loopback-only by default. LAN sharing (other devices on your network can
     // reach the stream) binds 0.0.0.0 instead — toggled from Settings.
     this.bindHost = '127.0.0.1'
+  }
+
+  setMaxConns(conns) {
+    const valid = Math.max(10, Math.min(2000, Number(conns) || 1000))
+    if (this.streamClient && !this.streamClient.destroyed) {
+      this.streamClient.maxConns = valid
+      console.log(`[StreamManager] Updated streamClient.maxConns to ${valid}`)
+    }
   }
 
   setLanSharing(enabled) {
@@ -194,6 +204,48 @@ export class StreamManager {
     if (magnetMatch) return magnetMatch[1].toLowerCase()
     const candidate = source.trim().toLowerCase()
     return /^[a-f0-9]{40}$/.test(candidate) ? candidate : null
+  }
+
+  /**
+   * A persistent download starts with a low-priority whole-torrent selection.
+   * Suspend it while using that torrent as a stream source: otherwise its
+   * sequential scheduler backfills byte zero in parallel with a forward seek.
+   */
+  prepareMainTorrentForStreaming(torrent, infoHash) {
+    if (!this.isUsingMainClient || !torrent || torrent.destroyed || !torrent.pieces?.length) return
+
+    this.restoreMainTorrentDownload()
+    this.mainTorrentStreamState = {
+      torrent,
+      infoHash,
+      strategy: torrent.strategy
+    }
+    try {
+      torrent.deselect(0, torrent.pieces.length - 1)
+    } catch (e) {
+      console.warn('[StreamManager] Could not suspend main download selection:', e.message)
+    }
+  }
+
+  /** Restore the persistent torrent's user-selected files after playback. */
+  restoreMainTorrentDownload() {
+    const state = this.mainTorrentStreamState
+    this.mainTorrentStreamState = null
+    const torrent = state?.torrent
+    if (!torrent || torrent.destroyed || !torrent.pieces?.length) return
+
+    try {
+      torrent.deselect(0, torrent.pieces.length - 1)
+      const managed = this.getManagedTorrent?.(state.infoHash)
+      const deselected = new Set(managed?.deselectedFiles || [])
+      torrent.files.forEach((file, index) => {
+        if (deselected.has(index) || deselected.has(file.path)) return
+        file.select(0)
+      })
+      torrent.strategy = managed?.strategy || state.strategy || 'sequential'
+    } catch (e) {
+      console.warn('[StreamManager] Could not restore main download selection:', e.message)
+    }
   }
 
   /**
@@ -318,10 +370,11 @@ export class StreamManager {
   async getStreamClient() {
     if (!this.streamClient || this.streamClient.destroyed) {
       const { default: WebTorrent } = await import('webtorrent')
+      const targetMaxConns = (this.getMaxConns ? this.getMaxConns() : null) || 1000
       this.streamClient = new WebTorrent({
-        // Ephemeral client for streaming: wide peer net, but sequential
-        // piece order (WebTorrent default) so playback fills ahead first.
-        maxConns: 200,
+        // Ephemeral client for streaming: maximize peer net and aggressive discovery
+        maxConns: targetMaxConns,
+        maxWebConns: 100,
         dht: {
           bootstrap: [
             'router.bittorrent.com:6881',
@@ -354,9 +407,13 @@ export class StreamManager {
             'udp://movies.zsw.ca:6969/announce',
             'udp://tracker.tiny-vps.com:6969/announce',
             'udp://retracker.lanta.net:2710/announce',
+            'udp://explodie.org:6969/announce',
+            'udp://tracker.moeking.me:6969/announce',
+            'udp://opentor.net:6969/announce',
             'http://tracker.openbittorrent.com:80/announce',
             'http://open.tracker.cl:1337/announce'
-          ]
+          ],
+          getAnnounceOpts: () => ({ numwant: 200 })
         }
       })
 
@@ -436,7 +493,7 @@ export class StreamManager {
       }, 60000)
 
       try {
-        const torrent = client.add(torrentSource, { path: tempDir, deselect: true }, (t) => {
+        const torrent = client.add(torrentSource, { path: tempDir, deselect: true, maxWebConns: 100 }, (t) => {
           clearTimeout(timeout)
           this.trackParsed(t)
           resolve(this.formatTorrentMetadata(t))
@@ -542,6 +599,9 @@ export class StreamManager {
     } catch { /* best-effort */ }
     this.seekWindow = null
 
+    // A prior main-client stream may be switching files or sources.
+    this.restoreMainTorrentDownload()
+
     this.activeTorrent = torrent
     this.activeFileIndex = selectedIndex
     this.activeFile = targetFile
@@ -549,6 +609,7 @@ export class StreamManager {
     this.activeLocalStream = localStream
 
     if (torrent) {
+      this.prepareMainTorrentForStreaming(torrent, normHash)
       // 4. Prioritize piece downloading for the chosen file
       // Keep tiny sidecar subtitle files selected so they download
       // alongside the video; deselect everything else.
@@ -560,13 +621,11 @@ export class StreamManager {
         } catch { }
       })
 
-      // Keep a low-priority full-file selection so any skipped region can fill
-      // eventually. The live HTTP range and seek window below take priority.
-      try {
-        targetFile.select(0)
-      } catch (e) {
-        console.warn('[StreamManager] Error selecting file:', e)
-      }
+      // Do not add a full-file selection here. With sequential piece
+      // scheduling, that selection always backfills from byte zero after a
+      // forward seek. The bounded HTTP reader supplies only the active range
+      // (priority 1) and the moving seek window supplies the upcoming range
+      // (priority 2), so swarm demand stays at the playhead.
 
       // Playback needs pieces in order; the shared main-client torrent may be
       // on rarest-first for raw speed, so force sequential for the stream.
@@ -664,8 +723,8 @@ export class StreamManager {
         // (~50MB) that follows the playback position. Progressive buffering
         // reuses the same start (no churn); a forward seek jumps start and
         // moves the window, so the swarm fetches upcoming video first rather
-        // than backfilling the skipped gap. The gap still downloads afterwards
-        // at normal priority via the file-wide selection, so nothing is lost.
+        // than backfilling the skipped gap. A later backward seek creates its
+        // own bounded range; skipped data is not downloaded speculatively.
         if (torrent) {
           try {
             const pieceLen = torrent.pieceLength || 0
@@ -814,6 +873,8 @@ export class StreamManager {
     const torrent = this.activeTorrent
     const isUsingMain = this.isUsingMainClient
     const hash = this.activeInfoHash || (torrent?.infoHash || '').toLowerCase()
+
+    this.restoreMainTorrentDownload()
 
     this.activeTorrent = null
     this.activeFile = null

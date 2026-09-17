@@ -79,6 +79,9 @@ const OPEN_TRACKERS = [
   'udp://movies.zsw.ca:6969/announce',
   'udp://tracker.tiny-vps.com:6969/announce',
   'udp://retracker.lanta.net:2710/announce',
+  'udp://explodie.org:6969/announce',
+  'udp://tracker.moeking.me:6969/announce',
+  'udp://opentor.net:6969/announce',
   'http://tracker.openbittorrent.com:80/announce',
   'http://open.tracker.cl:1337/announce'
 ]
@@ -96,16 +99,20 @@ const DHT_BOOTSTRAP = [
 async function initWebTorrent() {
   const { default: WebTorrent } = await import('webtorrent')
 
+  const maxConnections = Number(appConfig.maxConns) || 1000
   const opts = {
-    // Max-throughput tuning: more concurrent peers + full discovery stack.
-    // Defaults were 55 conns; 200 lets healthy swarms saturate your pipe.
-    maxConns: 200,
+    // Max-throughput tuning: maximize concurrent peers + full discovery stack.
+    maxConns: maxConnections,
+    maxWebConns: 100,
     dht: { bootstrap: DHT_BOOTSTRAP },
     lsd: true,
     utPex: true,
     natUpnp: true,
     natPmp: true,
-    tracker: { announce: OPEN_TRACKERS }
+    tracker: {
+      announce: OPEN_TRACKERS,
+      getAnnounceOpts: () => ({ numwant: 200 })
+    }
   }
   if (appConfig.networkPort) {
     console.log('[WebTorrent] Initializing on port:', appConfig.networkPort)
@@ -1023,6 +1030,13 @@ function setupIpcHandlers() {
       await fs.writeFile(CONFIG_PATH, JSON.stringify(updated, null, 2))
 
       // Apply side effects
+      if (newConfig.maxConns !== undefined) {
+        const conns = Math.max(10, Math.min(2000, Number(newConfig.maxConns) || 1000))
+        console.log('[Config] Setting max connections:', conns)
+        if (client) client.maxConns = conns
+        if (streamManager) streamManager.setMaxConns(conns)
+      }
+
       if (client) {
         if (typeof newConfig.downloadLimit === 'number') {
           console.log('[Config] Setting download limit:', newConfig.downloadLimit)
@@ -1484,7 +1498,8 @@ function setupIpcHandlers() {
   ipcMain.handle('stream-parse-torrent', async (event, source) => {
     if (!streamManager) streamManager = new StreamManager(
       () => client,
-      (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null
+      (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null,
+      () => Number(appConfig.maxConns) || 1000
     )
     return await streamManager.parseTorrent(source)
   })
@@ -1492,7 +1507,8 @@ function setupIpcHandlers() {
   ipcMain.handle('stream-start', async (event, { infoHash, fileIndex }) => {
     if (!streamManager) streamManager = new StreamManager(
       () => client,
-      (hash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (hash || '').toLowerCase()) || null
+      (hash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (hash || '').toLowerCase()) || null,
+      () => Number(appConfig.maxConns) || 1000
     )
     return await streamManager.startStreaming(infoHash, fileIndex)
   })
@@ -1904,7 +1920,8 @@ app.whenReady().then(async () => {
   try {
     if (!streamManager) streamManager = new StreamManager(
       () => client,
-      (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null
+      (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null,
+      () => Number(appConfig.maxConns) || 1000
     )
     streamManager.cleanTempCache()
   } catch (e) {

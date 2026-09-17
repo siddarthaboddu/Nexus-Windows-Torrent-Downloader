@@ -88,7 +88,9 @@ const isTimeBuffered = (video, t) => {
   return false
 }
 
-// Contiguous buffered seconds ahead of the playhead + total buffered %.
+// Contiguous buffered seconds ahead of the playhead, total buffered %, and
+// actual timeline segments. A video can have data at 00:00 and after a seek;
+// drawing total bytes as one bar from zero misrepresents that state.
 const bufferInfo = (video) => {
   try {
     const b = video.buffered
@@ -96,15 +98,22 @@ const bufferInfo = (video) => {
     const dur = video.duration || 0
     let ahead = 0
     let total = 0
+    const ranges = []
     for (let i = 0; i < b.length; i++) {
       const s = b.start(i)
       const e = b.end(i)
       total += Math.max(0, e - s)
       if (now >= s && now <= e) ahead = Math.max(0, e - now)
+      if (dur > 0 && e > s) {
+        ranges.push({
+          start: Math.max(0, Math.min((s / dur) * 100, 100)),
+          end: Math.max(0, Math.min((e / dur) * 100, 100))
+        })
+      }
     }
-    return { ahead, pct: dur > 0 ? Math.min((total / dur) * 100, 100) : 0 }
+    return { ahead, pct: dur > 0 ? Math.min((total / dur) * 100, 100) : 0, ranges }
   } catch {
-    return { ahead: 0, pct: 0 }
+    return { ahead: 0, pct: 0, ranges: [] }
   }
 }
 
@@ -119,7 +128,7 @@ export default function StreamCinemaPlayer({
   const containerRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
   const savePosRef = useRef(0)
-  const lastUiBufferRef = useRef({ ahead: 0, pct: 0, at: 0 })
+  const lastUiBufferRef = useRef({ ahead: 0, pct: 0, rangeKey: '', at: 0 })
   const stuckRef = useRef({ t: 0, at: 0 }) // last playback-progress timestamp (decoder watchdog)
   const cueBaseRef = useRef(new Map()) // trackId -> [{ cue, start, end }]
   const subtitleDelayRef = useRef(0)
@@ -131,6 +140,7 @@ export default function StreamCinemaPlayer({
   const [isMuted, setIsMuted] = useState(false)
   const [bufferedPercent, setBufferedPercent] = useState(0)
   const [bufferAhead, setBufferAhead] = useState(0) // contiguous seconds ahead of playhead
+  const [bufferedRanges, setBufferedRanges] = useState([])
   const [isBuffering, setIsBuffering] = useState(true)
   const [isGating, setIsGating] = useState(true) // buffer-gated autoplay
   const [waitingForPieces, setWaitingForPieces] = useState(false)
@@ -199,16 +209,19 @@ export default function StreamCinemaPlayer({
   // Push buffer UI state only on material change: progress/timeupdate fire
   // constantly during a live download and naive setState each event
   // re-renders the whole player tree (jank mistaken for stream lag).
-  const pushBufferState = useCallback((ahead, pct, force = false) => {
+  const pushBufferState = useCallback((ahead, pct, ranges = [], force = false) => {
     const prev = lastUiBufferRef.current
     const now = Date.now()
+    const rangeKey = ranges.map(range => `${range.start.toFixed(1)}-${range.end.toFixed(1)}`).join(',')
     if (!force
       && Math.abs(ahead - prev.ahead) < 0.5
       && Math.abs(pct - prev.pct) < 1
+      && rangeKey === prev.rangeKey
       && now - prev.at < 1000) return
-    lastUiBufferRef.current = { ahead, pct, at: now }
+    lastUiBufferRef.current = { ahead, pct, rangeKey, at: now }
     setBufferAhead(ahead)
     setBufferedPercent(pct)
+    setBufferedRanges(ranges)
   }, [])
 
   // Video event handlers
@@ -254,8 +267,8 @@ export default function StreamCinemaPlayer({
     const id = setInterval(() => {
       const video = videoRef.current
       if (!video) return
-      const { ahead, pct } = bufferInfo(video)
-      pushBufferState(ahead, pct, true)
+      const { ahead, pct, ranges } = bufferInfo(video)
+      pushBufferState(ahead, pct, ranges, true)
       const dur = video.duration || 0
       const remain = dur - video.currentTime
       const need = Math.min(PREBUFFER_SECONDS, Math.max(0, remain - 5))
@@ -280,8 +293,8 @@ export default function StreamCinemaPlayer({
     setCurrentTime(now)
     stuckRef.current = { t: now, at: Date.now() } // picture is advancing — decoder alive
 
-    const { ahead, pct } = bufferInfo(video)
-    pushBufferState(ahead, pct)
+    const { ahead, pct, ranges } = bufferInfo(video)
+    pushBufferState(ahead, pct, ranges)
 
     // Piece-arrival clears the "waiting" state once the playhead is covered
     if (waitingForPieces && isTimeBuffered(video, now)) {
@@ -299,8 +312,8 @@ export default function StreamCinemaPlayer({
   const handleProgress = () => {
     if (!videoRef.current) return
     const video = videoRef.current
-    const { ahead, pct } = bufferInfo(video)
-    pushBufferState(ahead, pct)
+    const { ahead, pct, ranges } = bufferInfo(video)
+    pushBufferState(ahead, pct, ranges)
 
     const dur = video.duration || 0
     const enough = ahead >= GATE_SECONDS
@@ -326,6 +339,7 @@ export default function StreamCinemaPlayer({
     setWaitingForPieces(false)
     setBufferAhead(0)
     setBufferedPercent(0)
+    setBufferedRanges([])
     setResumeNote(null)
     cueBaseRef.current = new Map()
     stuckRef.current = { t: 0, at: Date.now() } // arm the decoder watchdog clock
@@ -683,8 +697,8 @@ export default function StreamCinemaPlayer({
     if (!showStats) return
     const id = setInterval(() => {
       if (videoRef.current) {
-        const { ahead, pct } = bufferInfo(videoRef.current)
-        pushBufferState(ahead, pct, true)
+        const { ahead, pct, ranges } = bufferInfo(videoRef.current)
+        pushBufferState(ahead, pct, ranges, true)
       }
     }, 1000)
     return () => clearInterval(id)
@@ -992,10 +1006,13 @@ export default function StreamCinemaPlayer({
         <div className="relative mb-3 flex items-center group/timeline">
           {/* Buffer Bar */}
           <div className="absolute inset-x-0 h-1.5 bg-white/20 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-white/40 transition-all duration-300"
-              style={{ width: `${bufferedPercent}%` }}
-            />
+            {bufferedRanges.map((range, index) => (
+              <div
+                key={`${range.start}-${range.end}-${index}`}
+                className="absolute h-full bg-white/40 transition-all duration-300"
+                style={{ left: `${range.start}%`, width: `${Math.max(0, range.end - range.start)}%` }}
+              />
+            ))}
           </div>
 
           {/* Played Progress Bar */}

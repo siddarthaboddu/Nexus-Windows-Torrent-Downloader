@@ -18,7 +18,7 @@ export default function StreamTelemetryBar({
 }) {
   const downloadSpeedFormatted = stats.downloadSpeed ? `${formatBytes(stats.downloadSpeed)}/s` : '0 KB/s'
   const uploadSpeedFormatted = stats.uploadSpeed ? `${formatBytes(stats.uploadSpeed)}/s` : '0 KB/s'
-  const percentBuffered = Math.min(Math.round((stats.progress || 0) * 100), 100)
+  const percentCached = Math.min(Math.round((stats.progress || 0) * 100), 100)
   const isLocal = Boolean(stats.local)
   const peerDetail = stats.numPeers
     ? `${stats.seeders || 0} seed · ${stats.unchokedPeers || 0} unchoked${stats.queuedPeers ? ` · ${stats.queuedPeers} queued` : ''}`
@@ -63,19 +63,15 @@ export default function StreamTelemetryBar({
           </div>
         </div>
 
-        {/* Buffered Progress */}
-        <div className="flex items-center gap-2 min-w-[120px]">
+        {/* Total received data. This is deliberately not drawn on the video
+            timeline: torrent pieces can be sparse after a forward seek. */}
+        <div className="min-w-[120px]">
           <div>
             <div className="text-muted-foreground text-[10px] font-medium uppercase flex justify-between">
-              <span>Stream Buffer</span>
-              <span className="font-mono text-foreground font-semibold">{percentBuffered}%</span>
+              <span>File cached</span>
+              <span className="font-mono text-foreground font-semibold">{percentCached}%</span>
             </div>
-            <div className="w-28 h-1.5 bg-secondary rounded-full overflow-hidden mt-1 border border-border/50">
-              <div
-                className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all duration-300"
-                style={{ width: `${percentBuffered}%` }}
-              />
-            </div>
+            <div className="text-[9px] text-muted-foreground">Total pieces received, not playback position</div>
           </div>
         </div>
       </div>
