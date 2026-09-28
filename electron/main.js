@@ -1495,22 +1495,38 @@ function setupIpcHandlers() {
   })
 
   // --- Live Video Streaming Feature Handlers ---
+  // Single construction site: the manager is also needed by the fire-and-
+  // forget seek hint below, which must not race stream-start for creation.
+  const ensureStreamManager = () => {
+    if (!streamManager) {
+      streamManager = new StreamManager(
+        () => client,
+        (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null,
+        () => Number(appConfig.maxConns) || 1000
+      )
+    }
+    return streamManager
+  }
+
   ipcMain.handle('stream-parse-torrent', async (event, source) => {
-    if (!streamManager) streamManager = new StreamManager(
-      () => client,
-      (infoHash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (infoHash || '').toLowerCase()) || null,
-      () => Number(appConfig.maxConns) || 1000
-    )
-    return await streamManager.parseTorrent(source)
+    return await ensureStreamManager().parseTorrent(source)
   })
 
   ipcMain.handle('stream-start', async (event, { infoHash, fileIndex }) => {
-    if (!streamManager) streamManager = new StreamManager(
-      () => client,
-      (hash) => managedTorrents.find(t => (t.infoHash || '').toLowerCase() === (hash || '').toLowerCase()) || null,
-      () => Number(appConfig.maxConns) || 1000
-    )
-    return await streamManager.startStreaming(infoHash, fileIndex)
+    return await ensureStreamManager().startStreaming(infoHash, fileIndex)
+  })
+
+  // Seek intent from the player: re-anchor the read-ahead window now instead
+  // of waiting for Chromium's range request to arrive, shaving a round trip
+  // and a connection setup off every seek and scrub.
+  ipcMain.on('stream-seek-hint', (event, payload) => {
+    try {
+      const byteOffset = Number(payload?.byteOffset)
+      if (!Number.isSafeInteger(byteOffset) || byteOffset < 0) return
+      ensureStreamManager().prefetchAt(byteOffset)
+    } catch (e) {
+      console.warn('[Stream] seek hint failed:', e.message)
+    }
   })
 
   ipcMain.handle('stream-stop', async () => {
@@ -1623,6 +1639,10 @@ function createWindow() {
         : path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      // A downloader is routinely left minimized. Chromium otherwise throttles
+      // timers and the media pipeline in occluded windows, which directly
+      // slows both the HTTP server and playback.
+      backgroundThrottling: false,
     },
     title: 'Nexus Torrent',
     backgroundColor: '#0a0a0a',

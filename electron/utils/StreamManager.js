@@ -5,12 +5,18 @@ import fsSync from 'node:fs'
 import { app } from 'electron'
 import { capRangeLength, parseRangeHeader } from './rangeParser.js'
 import { resolveWithinRoot } from './safePath.js'
+import { MAX_STREAM_RANGE_BYTES, computeSeekWindow, shouldMoveWindow } from './streamWindow.js'
 
 // Chromium commonly requests `Range: bytes=N-`. Do not hand that unbounded
 // range to WebTorrent: its FileIterator then selects N..EOF at stream
 // priority, which competes with the new location after a forward seek.
-const MAX_STREAM_RANGE_BYTES = 8 * 1024 * 1024
-const STREAM_WINDOW_BYTES = 50 * 1024 * 1024
+// MAX_STREAM_RANGE_BYTES bounds it; the read-ahead window that follows the
+// playhead lives in streamWindow.js.
+
+// Larger read chunks than Node's 64KB default. Each chunk is a syscall plus a
+// pipe write on the hot path, so fewer/larger chunks measurably reduce
+// per-byte overhead for high-bitrate playback.
+const STREAM_HIGH_WATER_MARK = 1024 * 1024
 
 const VIDEO_EXTENSIONS = new Set([
   'mp4', 'm4v', 'mkv', 'webm', 'avi', 'mov', 'wmv', 'flv', 'ts', 'ogv', '3gp'
@@ -153,6 +159,7 @@ export class StreamManager {
     this.activeInfoHash = null
     this.activeLocalStream = null
     this.activeStream = null // Current active read stream if any
+    this.subtitleCache = new Map() // `${infoHash}:${fileIndex}` -> converted WebVTT buffer
     this.mainTorrentStreamState = null // Selection/strategy to restore after main-client playback
     this.parsedTorrents = new Map() // infoHash -> the instance used for metadata selection
     this.parsedLocalStreams = new Map() // infoHash -> verified files already on disk
@@ -458,6 +465,37 @@ export class StreamManager {
       return this.formatTorrentMetadata(existingTorrent)
     }
 
+    // The main client already owns this infoHash but its metadata has not
+    // landed yet. Adding the same infoHash to a second client would run two
+    // independent swarms for one torrent — peers are split across both, the
+    // piece stores diverge, and both DHTs bootstrap. Wait on the instance the
+    // main client already has instead.
+    if (existingTorrent) {
+      try {
+        return await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            existingTorrent.removeListener?.('metadata', onMetadata)
+            reject(new Error('Timed out waiting for torrent metadata. Please verify magnet/peers.'))
+          }, 60000)
+          const onMetadata = () => {
+            clearTimeout(timeout)
+            if (!existingTorrent.files?.length) {
+              reject(new Error('Torrent metadata is not ready for the selected file. Please retry.'))
+              return
+            }
+            this.parsedTorrents.set((existingTorrent.infoHash || '').toLowerCase(), existingTorrent)
+            resolve(this.formatTorrentMetadata(existingTorrent))
+          }
+          existingTorrent.once?.('metadata', onMetadata)
+          // Metadata may have completed between the check above and the
+          // listener registration.
+          if (existingTorrent.metadata && existingTorrent.files?.length) onMetadata()
+        })
+      } catch (err) {
+        console.warn('[StreamManager] Main-client metadata wait failed:', err.message)
+      }
+    }
+
     const client = await this.getStreamClient()
     const tempDir = await this.ensureTempDir()
 
@@ -638,8 +676,15 @@ export class StreamManager {
     const mimeType = this.getMimeType(targetFile.name)
     const localFilePath = localStream ? targetFile.localPath : null
     const createVideoReadStream = (options = undefined) => (
-      localFilePath ? fsSync.createReadStream(localFilePath, options) : targetFile.createReadStream(options)
+      localFilePath
+        ? fsSync.createReadStream(localFilePath, { highWaterMark: STREAM_HIGH_WATER_MARK, ...options })
+        : targetFile.createReadStream(options)
     )
+
+    // Immutable for the life of this server: the infoHash, file index and
+    // length fully identify the bytes. Lets the media cache revalidate with a
+    // cheap 304 instead of refetching a whole range.
+    const streamETag = `"${normHash}-${selectedIndex}-${targetFile.length}"`
 
     const server = http.createServer(async (req, res) => {
       // CORS: same-origin page loads need no header, but <track> fetches run
@@ -674,6 +719,20 @@ export class StreamManager {
         if (torrent) {
           try { subFile.select() } catch { }
         }
+        // Cache the converted WebVTT per stream. Re-opening the CC menu
+        // otherwise re-reads the subtitle from the swarm and re-runs the
+        // format conversion on every request.
+        const cacheKey = `${normHash}:${subIndex}`
+        const cached = this.subtitleCache.get(cacheKey)
+        if (cached) {
+          res.writeHead(200, {
+            'Content-Type': 'text/vtt;charset=utf-8',
+            'Content-Length': cached.length,
+            'Cache-Control': 'private, max-age=3600'
+          })
+          res.end(cached)
+          return
+        }
         try {
           const raw = localStream
             ? await fs.readFile(subFile.localPath, 'utf8')
@@ -681,12 +740,11 @@ export class StreamManager {
           const ext = path.extname(subFile.name).toLowerCase().replace('.', '')
           const vtt = convertSubtitleToVtt(raw, ext)
           const body = Buffer.from(vtt, 'utf8')
+          this.subtitleCache.set(cacheKey, body)
           res.writeHead(200, {
             'Content-Type': 'text/vtt;charset=utf-8',
             'Content-Length': body.length,
-            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-            'Pragma': 'no-cache',
-            'Expires': '0'
+            'Cache-Control': 'private, max-age=3600'
           })
           res.end(body)
         } catch (err) {
@@ -714,37 +772,48 @@ export class StreamManager {
         // priority after the player has moved to another timestamp.
         const { start, end } = capRangeLength(parsed, MAX_STREAM_RANGE_BYTES)
         const chunkSize = (end - start) + 1
+        // Revalidation: the media cache re-asks for a range it already holds.
+        // Answer 304 so the bytes are not sent again.
+        if (req.headers['if-none-match'] === streamETag) {
+          res.writeHead(304, {
+            'ETag': streamETag,
+            // RFC 7232: a 304 answering a range request still reports which
+            // range the stored response covers.
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Cache-Control': 'private, max-age=3600'
+          })
+          res.end()
+          return
+        }
         // NOTE: no manual torrent.critical() here. file.createReadStream()
         // already prioritizes its own window via FileIterator, and critical
         // flags are sticky (never cleared) — marking 10MB on every Range
         // request accumulates until everything is "critical", which defeats
         // prioritization and thrashes the swarm.
-        // Seek-aware window instead: a removable, highest-priority selection
-        // (~50MB) that follows the playback position. Progressive buffering
-        // reuses the same start (no churn); a forward seek jumps start and
-        // moves the window, so the swarm fetches upcoming video first rather
-        // than backfilling the skipped gap. A later backward seek creates its
-        // own bounded range; skipped data is not downloaded speculatively.
+        // Seek-aware window: a removable, highest-priority selection that
+        // follows the playback position, so the swarm always has forward
+        // demand. Progressive buffering reuses the same start (no churn); a
+        // seek re-anchors it. The arithmetic lives in streamWindow.js so the
+        // behaviour that prevents mid-playback stalls is unit-tested.
         if (torrent) {
           try {
-            const pieceLen = torrent.pieceLength || 0
-            const fileStartPiece = targetFile._startPiece ?? 0
-            const fileEndPiece = targetFile._endPiece ?? (torrent.pieces ? torrent.pieces.length - 1 : -1)
-            if (pieceLen > 0 && fileEndPiece >= fileStartPiece) {
-              const reqPiece = Math.min(fileEndPiece, Math.max(fileStartPiece,
-                Math.floor(((targetFile.offset || 0) + start) / pieceLen)))
-              const windowPieces = Math.max(4, Math.min(64, Math.ceil(STREAM_WINDOW_BYTES / pieceLen)))
-              const winStart = reqPiece
-              const winEnd = Math.min(fileEndPiece, reqPiece + windowPieces)
+            const next = computeSeekWindow({
+              pieceLength: torrent.pieceLength || 0,
+              fileStartPiece: targetFile._startPiece ?? 0,
+              fileEndPiece: targetFile._endPiece ?? (torrent.pieces ? torrent.pieces.length - 1 : -1),
+              fileOffset: targetFile.offset || 0,
+              requestStart: start
+            })
+            if (next && shouldMoveWindow(this.seekWindow, next)) {
               const prev = this.seekWindow
-              const moved = !prev || Math.abs(winStart - prev.start) > Math.max(4, Math.floor(windowPieces / 4))
-              if (moved && winEnd >= winStart) {
-                if (prev) { try { torrent.deselect(prev.start, prev.end) } catch { /* stale */ } }
-                // FileIterator uses priority 1 for the bounded HTTP response.
-                // The moving playback window must outrank it after a seek.
-                torrent.select(winStart, winEnd, 2)
-                this.seekWindow = { start: winStart, end: winEnd }
-              }
+              // isStreamSelection must match the select() that created it,
+              // otherwise the deselect is a no-op and the stale window keeps
+              // its high priority forever.
+              if (prev) { try { torrent.deselect(prev.start, prev.end) } catch { /* stale */ } }
+              // FileIterator uses priority 1 for the bounded HTTP response.
+              // The moving playback window must outrank it after a seek.
+              torrent.select(next.start, next.end, 2)
+              this.seekWindow = next
             }
           } catch { /* prioritization is best-effort */ }
         }
@@ -753,9 +822,13 @@ export class StreamManager {
           'Accept-Ranges': 'bytes',
           'Content-Length': chunkSize,
           'Content-Type': mimeType,
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-          'Expires': '0'
+          // The old no-store policy forbade Chromium from retaining a single
+          // byte, so every stall and every re-buffer had to re-request from
+          // here. This is a loopback server serving immutable torrent content,
+          // so a private cache is safe and keeps already-fetched media
+          // available when the swarm stutters.
+          'Cache-Control': 'private, max-age=3600',
+          'ETag': streamETag
         })
 
         const stream = createVideoReadStream({ start, end })
@@ -777,9 +850,8 @@ export class StreamManager {
           'Accept-Ranges': 'bytes',
           'Content-Length': fileSize,
           'Content-Type': mimeType,
-          'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-          'Expires': '0'
+          'Cache-Control': 'private, max-age=3600',
+          'ETag': streamETag
         })
 
         const stream = createVideoReadStream()
@@ -796,6 +868,15 @@ export class StreamManager {
           res.end()
         })
       }
+    })
+
+    // TCP tuning: Nagle's algorithm can hold back small writes behind a full
+    // segment, and Node's 5s keep-alive default closes the connection between
+    // sequential range requests. Both add latency per response.
+    server.keepAliveTimeout = 72 * 1000
+    server.headersTimeout = 75 * 1000
+    server.on('connection', (socket) => {
+      try { socket.setNoDelay(true) } catch { /* best-effort */ }
     })
 
     // Listen on dynamic available port (loopback, or LAN when sharing is on)
@@ -835,6 +916,41 @@ export class StreamManager {
       subtitles,
       isLocal: Boolean(localStream),
       isExternalPlayerFriendly: !['mp4', 'webm'].includes(path.extname(targetFile.name).toLowerCase().replace('.', ''))
+    }
+  }
+
+  /**
+   * Re-anchor the read-ahead window to a seek target ahead of the player's
+   * HTTP range request, so the swarm starts fetching the destination
+   * immediately instead of after the request round trip.
+   *
+   * Best-effort and purely advisory: the subsequent range request recomputes
+   * the window and corrects it if the estimated offset was off.
+   *
+   * @param {number} requestStart estimated byte offset of the seek target
+   * @returns {boolean} true when the window was actually moved
+   */
+  prefetchAt(requestStart) {
+    const torrent = this.activeTorrent
+    if (!torrent || torrent.destroyed || this.activeLocalStream) return false
+
+    try {
+      const next = computeSeekWindow({
+        pieceLength: torrent.pieceLength || 0,
+        fileStartPiece: this.activeFile?._startPiece ?? 0,
+        fileEndPiece: this.activeFile?._endPiece ?? (torrent.pieces ? torrent.pieces.length - 1 : -1),
+        fileOffset: this.activeFile?.offset || 0,
+        requestStart
+      })
+      if (!next || !shouldMoveWindow(this.seekWindow, next)) return false
+
+      const prev = this.seekWindow
+      if (prev) { try { torrent.deselect(prev.start, prev.end) } catch { /* stale */ } }
+      torrent.select(next.start, next.end, 2)
+      this.seekWindow = next
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -882,6 +998,7 @@ export class StreamManager {
     this.activeInfoHash = null
     this.activeLocalStream = null
     this.isUsingMainClient = false
+    this.subtitleCache.clear()
     if (hash) this.untrackParsed(hash)
 
     // If it was an ephemeral streamClient torrent, remove it and clean temp files
@@ -943,6 +1060,16 @@ export class StreamManager {
     const downloaded = f?.downloaded || t.downloaded || 0
     const progress = targetLength > 0 ? (downloaded / targetLength) : 0
 
+    // Single pass over the wire list. This runs on a 1Hz IPC poll and can hold
+    // up to maxConns entries, so two .filter() passes meant two intermediate
+    // arrays per tick.
+    let seeders = 0
+    let unchokedPeers = 0
+    for (const wire of t.wires || []) {
+      if (wire.isSeeder) seeders++
+      if (!wire.peerChoking) unchokedPeers++
+    }
+
     return {
       active: true,
       infoHash: (t.infoHash || '').toLowerCase(),
@@ -950,8 +1077,8 @@ export class StreamManager {
       downloadSpeed: t.downloadSpeed || 0,
       uploadSpeed: t.uploadSpeed || 0,
       numPeers: t.numPeers || 0,
-      seeders: (t.wires || []).filter(wire => wire.isSeeder).length,
-      unchokedPeers: (t.wires || []).filter(wire => !wire.peerChoking).length,
+      seeders,
+      unchokedPeers,
       queuedPeers: Math.max(0, t._numQueued || 0),
       progress,
       downloaded,

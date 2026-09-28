@@ -44,8 +44,14 @@ const formatTime = (seconds) => {
   return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`
 }
 
-const GATE_SECONDS = 12 // start playback only with this much contiguous buffer
-const REBUFFER_LOW_WATER_SECONDS = 3 // pause before Chromium starts stuttering
+// Start playback only with this much contiguous buffer. Deliberately small:
+// the source is loopback-backed by the swarm, and Chromium's own buffering
+// handles the rest. A large gate here is a long, visible wait on every start.
+const GATE_SECONDS = 3
+// Only intervene once the playhead is genuinely about to run dry. Pausing
+// earlier forces Chromium to tear down and rebuild its buffering strategy,
+// which produces exactly the start/stop thrash this is meant to prevent.
+const REBUFFER_LOW_WATER_SECONDS = 1
 const PREBUFFER_SECONDS = 15 * 60 // opt-in deep buffer: pause and fill this far ahead, then auto-resume
 const RESUME_KEY = (h, i) => `nexus:pos:${h}:${i}`
 
@@ -128,6 +134,7 @@ export default function StreamCinemaPlayer({
   const containerRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
   const savePosRef = useRef(0)
+  const lastTimePushRef = useRef(0) // throttles the clock re-render to 10Hz
   const lastUiBufferRef = useRef({ ahead: 0, pct: 0, rangeKey: '', at: 0 })
   const stuckRef = useRef({ t: 0, at: 0 }) // last playback-progress timestamp (decoder watchdog)
   const cueBaseRef = useRef(new Map()) // trackId -> [{ cue, start, end }]
@@ -290,7 +297,14 @@ export default function StreamCinemaPlayer({
     if (!videoRef.current) return
     const video = videoRef.current
     const now = video.currentTime
-    setCurrentTime(now)
+    // timeupdate fires ~4x/sec and each setState re-renders the whole player
+    // (including the telemetry subtree). The watchdog and resume writes below
+    // must still run every event; only the clock readout is throttled to a
+    // rate the progress bar can actually display.
+    if (Date.now() - lastTimePushRef.current >= 100) {
+      lastTimePushRef.current = Date.now()
+      setCurrentTime(now)
+    }
     stuckRef.current = { t: now, at: Date.now() } // picture is advancing — decoder alive
 
     const { ahead, pct, ranges } = bufferInfo(video)
@@ -417,12 +431,45 @@ export default function StreamCinemaPlayer({
     handleUserActivity()
   }
 
+  // Tell the main process where we are heading before Chromium issues the
+  // range request. Debounced so dragging the scrubber sends one hint at the
+  // end of the gesture rather than one per pixel of travel.
+  const seekHintTimerRef = useRef(null)
+  const sendSeekHint = useCallback((targetTime) => {
+    if (!window.ipcRenderer?.send) return
+    const dur = duration || 0
+    const len = streamData?.fileLength || 0
+    if (dur <= 0 || len <= 0) return
+    if (seekHintTimerRef.current) clearTimeout(seekHintTimerRef.current)
+    seekHintTimerRef.current = setTimeout(() => {
+      seekHintTimerRef.current = null
+      const clamped = Math.max(0, Math.min(targetTime, dur))
+      // Linear time->byte estimate. The real range request corrects the window
+      // afterwards, so VBR drift here costs nothing but a slightly early fetch.
+      const byteOffset = Math.floor((clamped / dur) * len)
+      try {
+        window.ipcRenderer.send('stream-seek-hint', {
+          infoHash: streamData?.infoHash,
+          fileIndex: streamData?.fileIndex,
+          byteOffset
+        })
+      } catch (e) {
+        console.warn('[Stream] seek hint failed:', e)
+      }
+    }, 150)
+  }, [duration, streamData])
+
+  useEffect(() => () => {
+    if (seekHintTimerRef.current) clearTimeout(seekHintTimerRef.current)
+  }, [])
+
   const seek = (time) => {
     if (!videoRef.current) return
     const target = Math.max(0, Math.min(time, duration))
     const jumpingToSparse = !isTimeBuffered(videoRef.current, target)
     videoRef.current.currentTime = target
     setCurrentTime(target)
+    sendSeekHint(target)
     if (jumpingToSparse && isGating === false) {
       setWaitingForPieces(true)
       setIsBuffering(true)
@@ -825,7 +872,9 @@ export default function StreamCinemaPlayer({
         ref={videoRef}
         key={streamData.streamUrl}
         src={streamData.streamUrl}
-        crossOrigin="anonymous"
+        // Aggressive buffering: the source is a loopback HTTP server backed by
+        // the swarm, so there is no reason for Chromium to hold back.
+        preload="auto"
         onClick={togglePlay}
         onTimeUpdate={handleTimeUpdate}
         onProgress={handleProgress}
