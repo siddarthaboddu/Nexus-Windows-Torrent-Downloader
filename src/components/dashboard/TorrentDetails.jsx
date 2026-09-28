@@ -362,13 +362,20 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder, o
         }
     };
 
-    // Sample download & upload speed history periodically
+    // Sample download & upload speed history periodically.
+    // Only while the Overview tab is showing the chart: the interval was
+    // previously unconditional, so browsing the Files tab kept both a timer
+    // and a recharts ResponsiveContainer (which re-measures its parent on
+    // every render) alive for nothing. Sampling a hidden chart is invisible
+    // to the user, so history just resumes when the tab comes back.
     const speedRef = useRef({ dl: torrent.downloadSpeed, ul: torrent.uploadSpeed });
     useEffect(() => {
         speedRef.current = { dl: torrent.downloadSpeed, ul: torrent.uploadSpeed };
     }, [torrent.downloadSpeed, torrent.uploadSpeed]);
 
+    const isOverview = activeTab === 'overview';
     useEffect(() => {
+        if (!isOverview) return;
         const interval = setInterval(() => {
             setSpeedHistory(prev => {
                 const newPoint = {
@@ -382,7 +389,7 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder, o
             });
         }, 1000);
         return () => clearInterval(interval);
-    }, []);
+    }, [isOverview]);
 
     return (
         <div className="mt-4 p-4 glass rounded-xl animate-in slide-in-from-top-2">
