@@ -5,6 +5,7 @@ import fsSync from 'node:fs'
 import { app } from 'electron'
 import { capRangeLength, parseRangeHeader } from './rangeParser.js'
 import { resolveWithinRoot } from './safePath.js'
+import { MAIN_CLIENT_METADATA_GRACE_MS, awaitTorrentMetadata } from './awaitMetadata.js'
 import { MAX_STREAM_RANGE_BYTES, computeSeekWindow, shouldMoveWindow } from './streamWindow.js'
 
 // Chromium commonly requests `Range: bytes=N-`. Do not hand that unbounded
@@ -469,32 +470,22 @@ export class StreamManager {
     // The main client already owns this infoHash but its metadata has not
     // landed yet. Adding the same infoHash to a second client would run two
     // independent swarms for one torrent — peers are split across both, the
-    // piece stores diverge, and both DHTs bootstrap. Wait on the instance the
-    // main client already has instead.
+    // piece stores diverge, and both DHTs bootstrap. Give the instance the main
+    // client already has a SHORT grace period to finish, then fall through to
+    // the ephemeral client.
+    //
+    // This must stay short. The main client's torrent is frequently paused or
+    // has no reachable peers, in which case its metadata never arrives at all.
+    // A long wait here parks the UI on "Fetching Torrent Metadata" with no way
+    // forward, even though the ephemeral client could have resolved the magnet
+    // in seconds.
     if (existingTorrent) {
-      try {
-        return await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            existingTorrent.removeListener?.('metadata', onMetadata)
-            reject(new Error('Timed out waiting for torrent metadata. Please verify magnet/peers.'))
-          }, 60000)
-          const onMetadata = () => {
-            clearTimeout(timeout)
-            if (!existingTorrent.files?.length) {
-              reject(new Error('Torrent metadata is not ready for the selected file. Please retry.'))
-              return
-            }
-            this.parsedTorrents.set((existingTorrent.infoHash || '').toLowerCase(), existingTorrent)
-            resolve(this.formatTorrentMetadata(existingTorrent))
-          }
-          existingTorrent.once?.('metadata', onMetadata)
-          // Metadata may have completed between the check above and the
-          // listener registration.
-          if (existingTorrent.metadata && existingTorrent.files?.length) onMetadata()
-        })
-      } catch (err) {
-        console.warn('[StreamManager] Main-client metadata wait failed:', err.message)
+      const reused = await this.awaitMetadata(existingTorrent, MAIN_CLIENT_METADATA_GRACE_MS)
+      if (reused) {
+        this.parsedTorrents.set((existingTorrent.infoHash || '').toLowerCase(), existingTorrent)
+        return this.formatTorrentMetadata(reused)
       }
+      console.warn('[StreamManager] Main client metadata did not arrive in time; using the streaming client instead.')
     }
 
     const client = await this.getStreamClient()
@@ -547,6 +538,20 @@ export class StreamManager {
         reject(err)
       }
     })
+  }
+
+  /**
+   * Resolve once `torrent` has metadata, or null if it does not within
+   * `timeoutMs`. Never rejects and never hangs: a torrent whose metadata will
+   * never arrive (paused, no reachable peers) simply times out so the caller
+   * can fall back.
+   *
+   * @param {object} torrent WebTorrent torrent instance
+   * @param {number} timeoutMs grace period in milliseconds
+   * @returns {Promise<object|null>} the torrent once ready, else null
+   */
+  awaitMetadata(torrent, timeoutMs = MAIN_CLIENT_METADATA_GRACE_MS) {
+    return awaitTorrentMetadata(torrent, timeoutMs)
   }
 
   formatTorrentMetadata(torrent) {
