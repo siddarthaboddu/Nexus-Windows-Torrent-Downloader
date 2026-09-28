@@ -86,8 +86,10 @@ const OPEN_TRACKERS = [
   'http://open.tracker.cl:1337/announce'
 ]
 
-// Extra DHT bootstrap nodes on top of WebTorrent's 3 defaults — more doors
-// into the DHT means faster peer discovery, especially for fresh magnets.
+// DHT bootstrap nodes for faster peer discovery on fresh magnets.
+// NOTE: passing this REPLACES k-rpc's built-in BOOTSTRAP_NODES rather than
+// adding to them, so the 3 defaults are repeated here explicitly. Verified
+// against k-rpc: `this.bootstrap = toBootstrapArray(opts.nodes || opts.bootstrap)`.
 const DHT_BOOTSTRAP = [
   'router.bittorrent.com:6881',
   'router.utorrent.com:6881',
@@ -103,7 +105,10 @@ async function initWebTorrent() {
   const opts = {
     // Max-throughput tuning: maximize concurrent peers + full discovery stack.
     maxConns: maxConnections,
-    maxWebConns: 100,
+    // NOTE: maxWebConns is NOT a valid client option. WebTorrent reads it only
+    // per-torrent (Torrent constructor: `opts.maxWebConns || 4`), so setting it
+    // here did nothing and every web seed stayed capped at 4 connections. It is
+    // applied per torrent via applyDownloadTuning() instead.
     dht: { bootstrap: DHT_BOOTSTRAP },
     lsd: true,
     utPex: true,
@@ -334,7 +339,14 @@ async function addTorrentBySource(torrentId, downloadDir) {
       }
 
       // Add to WebTorrent
-      client.add(torrentSource, { path: downloadDir }, async (torrent) => {
+      // Add to WebTorrent.
+      // strategy is passed here (not left to WebTorrent's default) because the
+      // default is 'sequential', which downloads strictly front-to-back. That
+      // wastes swarm capacity whenever a contiguous prefix is unavailable and
+      // makes a partially-seeded file look stalled. 'rarest' grabs the pieces
+      // the fewest peers have, which is both faster to completion and the
+      // strategy every other add path in this file already uses.
+      client.add(torrentSource, { path: downloadDir, strategy: 'rarest' }, async (torrent) => {
         try {
           const normHash = (torrent.infoHash || '').toLowerCase();
 
@@ -418,9 +430,16 @@ function checkSeedingGoals() {
   const now = Date.now()
   let changed = false
 
+  // Runs on the 1Hz telemetry tick, so index managed state rather than
+  // rescanning it per active torrent.
+  const managedByHash = new Map()
+  for (const m of managedTorrents) {
+    managedByHash.set((m.infoHash || '').toLowerCase(), m)
+  }
+
   client.torrents.forEach(t => {
     const tHash = (t.infoHash || '').toLowerCase()
-    const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === tHash)
+    const managed = managedByHash.get(tHash)
     if (!managed || managed.paused) return
     if (!t.done && t.progress < 1) return
 
@@ -1122,10 +1141,14 @@ function setupIpcHandlers() {
 
     // Map active torrents
     const activeMap = new Map()
+    const managedByHash = new Map()
+    for (const m of managedTorrents) {
+      managedByHash.set((m.infoHash || '').toLowerCase(), m)
+    }
     if (client) {
       client.torrents.forEach(t => {
         const tHash = (t.infoHash || '').toLowerCase()
-        const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === tHash)
+        const managed = managedByHash.get(tHash)
         const baseUp = managed?.baseUploaded || 0
         const baseDown = managed?.baseDownloaded || 0
         const lifetimeUploaded = baseUp + (t.uploaded || 0)
@@ -1955,23 +1978,35 @@ app.whenReady().then(async () => {
       let totalDownloadSpeed = 0
       let totalUploadSpeed = 0
 
+      // Index managed state by hash once per tick. The per-torrent .find() below
+      // was O(active x managed); with a large library that is thousands of
+      // string comparisons every second, all of it on the same event loop that
+      // has to service swarm I/O and piece verification.
+      const managedByHash = new Map()
+      for (const m of managedTorrents) {
+        managedByHash.set((m.infoHash || '').toLowerCase(), m)
+      }
+
+      // Called once per tick instead of once per torrent (it rescans
+      // client.torrents itself, so the old call site was quadratic).
+      if (client && client.torrents.length > 0) updatePowerSaveBlocker()
+
       // Map active torrents
       const activeMap = new Map()
       if (client) {
         client.torrents.forEach(t => {
-          // Calculate connected seeds/peers
-          const connectedSeeds = t.wires.filter(w => w.isSeeder).length
-          const connectedPeers = t.wires.length - connectedSeeds
+          // Calculate connected seeds/peers in a single pass
+          let connectedSeeds = 0
+          for (const w of t.wires || []) {
+            if (w.isSeeder) connectedSeeds++
+          }
+          const connectedPeers = (t.wires ? t.wires.length : 0) - connectedSeeds
 
           totalDownloadSpeed += t.downloadSpeed
           totalUploadSpeed += t.uploadSpeed
 
-          updatePowerSaveBlocker()
-
-
-
           const tHash = (t.infoHash || '').toLowerCase()
-          const managed = managedTorrents.find(m => (m.infoHash || '').toLowerCase() === tHash)
+          const managed = managedByHash.get(tHash)
           const baseUp = managed?.baseUploaded || 0
           const baseDown = managed?.baseDownloaded || 0
           const lifetimeUploaded = baseUp + (t.uploaded || 0)
@@ -2105,7 +2140,26 @@ function applyFileSelections(torrent) {
   }
 }
 
+// Web seeds are the fastest source for freshly-released files, but WebTorrent
+// caps each torrent at 4 web-seed connections by default. This is a per-torrent
+// option (there is no client-level equivalent), so it has to be applied to every
+// torrent as it is added and to any torrent already in the client.
+const MAX_WEB_CONNS = 32
+
+function applyDownloadTuning(torrent) {
+  if (!torrent || torrent.destroyed) return
+  try {
+    torrent.maxWebConns = MAX_WEB_CONNS
+  } catch {
+    // Older WebTorrent builds without the field: harmless, just not tunable.
+  }
+}
+
 function setupTorrentEventListeners(torrent) {
+  // Every add path in this file routes through here, so this is the one place
+  // that has to know maxWebConns is a per-torrent setting.
+  applyDownloadTuning(torrent)
+
   // Prevent unhandled error events from crashing the Electron process
   torrent.on('error', (err) => {
     console.error(`[Torrent Error] ${torrent.name || torrent.infoHash}:`, err)

@@ -499,7 +499,7 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder, o
                                         onClick={() => onSetStrategy && onSetStrategy(torrent.infoHash, s.id)}
                                         className={clsx(
                                             "flex-1 px-2 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-                                            (torrent.strategy || 'sequential') === s.id
+                                            (torrent.strategy || 'rarest') === s.id
                                                 ? "bg-primary/20 text-primary border-primary/40"
                                                 : "bg-secondary/40 text-muted-foreground border-border/60 hover:text-foreground"
                                         )}
