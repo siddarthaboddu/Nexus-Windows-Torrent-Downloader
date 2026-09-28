@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo } from 'react';
 import { useTheme } from '../../contexts/ThemeProvider';
 import { LayoutDashboard, ArrowDownUp, Film, Settings, Activity, Sun, Moon } from 'lucide-react';
 import clsx from 'clsx';
@@ -29,15 +29,18 @@ const formatBytes = (bytes) => {
 
 const Sidebar = ({ activeTab, setActiveTab, stats = { downloadSpeed: 0, uploadSpeed: 0 }, config = {} }) => {
     const { theme, setTheme } = useTheme();
-    const [peakDown, setPeakDown] = useState(10 * 1024 * 1024);
-    const [peakUp, setPeakUp] = useState(2 * 1024 * 1024);
-
-    if (stats.downloadSpeed > peakDown) {
-        setPeakDown(stats.downloadSpeed);
-    }
-    if (stats.uploadSpeed > peakUp) {
-        setPeakUp(stats.uploadSpeed);
-    }
+    // Session peaks scale the gauge to real throughput. useMemo derives the new
+    // peak from the previous one, so this needs no state at all. The old
+    // version called setPeakDown() in the render body, re-rendering the sidebar
+    // on every 1s telemetry tick even though the peak rarely changes.
+    const peakDown = useMemo(
+        () => Math.max(10 * 1024 * 1024, stats.downloadSpeed || 0),
+        [stats.downloadSpeed]
+    );
+    const peakUp = useMemo(
+        () => Math.max(2 * 1024 * 1024, stats.uploadSpeed || 0),
+        [stats.uploadSpeed]
+    );
 
     const maxDown = (config?.downloadLimit && config.downloadLimit > 0) ? config.downloadLimit : Math.max(peakDown, 10 * 1024 * 1024);
     const maxUp = (config?.uploadLimit && config.uploadLimit > 0) ? config.uploadLimit : Math.max(peakUp, 2 * 1024 * 1024);

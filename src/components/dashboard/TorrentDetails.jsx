@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { Share2, HardDrive, Clock, Activity, File, Folder, FolderOpen, ChevronRight, ChevronDown, ArrowUp, ArrowDown, Key, Check, ExternalLink, Copy, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -283,6 +283,25 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder, o
     const [contextMenu, setContextMenu] = useState(null);
     const [copiedPath, setCopiedPath] = useState(false);
 
+    // Rebuild the file tree only when its STRUCTURE changes. The parent
+    // re-renders every second with fresh telemetry, and for a large
+    // multi-file torrent rebuilding the tree (and re-rendering every node) on
+    // each tick is pure waste. Per-file downloaded bytes change constantly but
+    // do not change the tree shape, so they are excluded from the key and
+    // still flow through fileData.
+    const files = torrent?.files;
+    const filesShape = useMemo(
+        () => (files && files.length > 0
+            ? files.length + '|' + files.map(f => `${f.path}:${f.selected === false ? 0 : 1}`).join('|')
+            : ''),
+        [files]
+    );
+    const filesTree = useMemo(
+        () => (files && files.length > 0 ? buildFileTree(files) : {}),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [filesShape]
+    );
+
     useEffect(() => {
         if (!contextMenu) return;
 
@@ -537,7 +556,11 @@ const TorrentDetails = ({ torrent, onToggleFile, onOpenFile, onOpenFileFolder, o
                     <div className="flex flex-col gap-1 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
                         {torrent.files && torrent.files.length > 0 ? (
                             (() => {
-                                const tree = buildFileTree(torrent.files);
+                                // Memoized: the parent re-renders on every 1s
+                                // telemetry tick, and rebuilding the whole tree
+                                // (plus re-rendering every node) each time is
+                                // wasted work for a large multi-file torrent.
+                                const tree = filesTree;
                                 return Object.values(tree).map((node) => (
                                     <FileTreeNode
                                         key={node.name}

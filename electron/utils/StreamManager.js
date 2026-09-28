@@ -381,7 +381,8 @@ export class StreamManager {
       this.streamClient = new WebTorrent({
         // Ephemeral client for streaming: maximize peer net and aggressive discovery
         maxConns: targetMaxConns,
-        maxWebConns: 100,
+        // maxWebConns is a per-torrent option, not a client one; it is passed
+        // to client.add() below. Do not set it here.
         dht: {
           bootstrap: [
             'router.bittorrent.com:6881',

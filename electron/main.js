@@ -199,6 +199,29 @@ function updatePowerSaveBlocker() {
   }
 }
 
+// Build the UI file list for a paused/managed torrent. Cached because this runs
+// on the 1Hz telemetry tick and a paused torrent's file list cannot change -
+// recomputing it meant re-allocating one object per file per second, per paused
+// torrent, forever. The cache lives in a side Map rather than on the managed
+// record, because managedTorrents is serialized verbatim to the config file.
+const managedFilesCache = new Map()
+
+function managedFilesForUi(managed) {
+  const source = managed.files || []
+  const deselected = managed.deselectedFiles || []
+  const sig = source.length + '|' + deselected.join(',')
+  const key = (managed.infoHash || '').toLowerCase()
+  const hit = managedFilesCache.get(key)
+  if (hit && hit.sig === sig) return hit.files
+  const files = source.map((f, idx) => ({
+    ...f,
+    selected: !deselected.includes(idx) && !deselected.includes(f.path),
+    index: f.index !== undefined ? f.index : idx
+  }))
+  managedFilesCache.set(key, { sig, files })
+  return files
+}
+
 async function saveTorrentsState() {
   // If already saving, queue another one
   if (isSaving) {
@@ -1223,11 +1246,7 @@ function setupIpcHandlers() {
           paused: true,
           strategy: managed.strategy || 'rarest',
           done: managed.done || managed.progress >= 1,
-          files: (managed.files || []).map((f, idx) => ({
-            ...f,
-            selected: !(managed.deselectedFiles || []).includes(idx) && !(managed.deselectedFiles || []).includes(f.path),
-            index: f.index !== undefined ? f.index : idx
-          }))
+          files: managedFilesForUi(managed)
         }
       }
     })
@@ -1255,6 +1274,7 @@ function setupIpcHandlers() {
 
     // Remove from managed state
     managedTorrents = managedTorrents.filter(mt => (mt.infoHash || '').toLowerCase() !== targetHash)
+    managedFilesCache.delete(targetHash)
     await saveTorrentsState()
 
     // Delete files if requested
@@ -2096,11 +2116,7 @@ app.whenReady().then(async () => {
           paused: true,
           strategy: managed.strategy || 'rarest',
           done: managed.done || false,
-          files: (managed.files || []).map((f, idx) => ({
-            ...f,
-            selected: !(managed.deselectedFiles || []).includes(idx) && !(managed.deselectedFiles || []).includes(f.path),
-            index: f.index !== undefined ? f.index : idx
-          }))
+          files: managedFilesForUi(managed)
         }
       })
 
